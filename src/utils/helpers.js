@@ -139,6 +139,42 @@ const sanitizeAgency = (agency) => {
   return safeAgency;
 };
 
+const sanitizeDeveloper = (developer) => {
+  if (!developer) return null;
+
+  const source =
+    typeof developer.toObject === 'function'
+      ? developer.toObject({ getters: true, virtuals: true })
+      : developer._doc
+        ? { ...developer._doc }
+        : { ...developer };
+
+  const {
+    password,
+    emailVerificationToken,
+    emailVerificationExpires,
+    phoneVerificationOTP,
+    phoneVerificationExpires,
+    resetPasswordToken,
+    resetPasswordExpires,
+    invitationToken,
+    access_token,
+    token_expires_at,
+    refresh_token,
+    refresh_token_expires_at,
+    passwordResetOTPHash,
+    passwordResetOTPExpires,
+    passwordResetEligibleUntil,
+    ...safeDeveloper
+  } = source;
+
+  if (!safeDeveloper.profilePicture || safeDeveloper.profilePicture === null) {
+    safeDeveloper.profilePicture = safeDeveloper.logo || null;
+  }
+
+  return safeDeveloper;
+};
+
 const sanitizeAgent = (agent) => {
   if (!agent) return null;
 
@@ -194,6 +230,7 @@ module.exports = {
   failure,
   sanitizeUser,
   sanitizeAgency,
+  sanitizeDeveloper,
   sanitizeAgent,
   generateInvitationToken,
   hashPassword,

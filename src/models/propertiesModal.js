@@ -34,12 +34,12 @@ const propertiesSchema = new Schema({
     },
     agency: {
         type: Schema.Types.ObjectId,
-        ref: 'Agency',
+        ref: 'Agencies',
         required: true
     },
     developer: {
         type: Schema.Types.ObjectId,
-        ref: 'Developer'
+        ref: 'Developers'
     },
 
     // Property Details
@@ -96,12 +96,11 @@ const propertiesSchema = new Schema({
         city: String,
         zone: String,
         building: String,
-        // coordinates: {
-        //     type: { type: String, enum: ['Point'], default: 'Point' },
-        //     coordinates: [Number] // [longitude, latitude]
-        // },
         googlePlaceId: String,
-        locationRef: { type: Schema.Types.ObjectId, ref: 'Location' }
+        coordinates: {
+            type: { type: String, enum: ['Point'] },
+            coordinates: [Number] // [longitude, latitude]
+        }
     },
 
     // Legal & Regulatory

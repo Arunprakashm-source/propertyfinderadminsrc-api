@@ -23,8 +23,18 @@ const usersSchema = new Schema({
         type: String,
         trim: true
     },
+    phoneCode: {
+        type: String,
+        trim: true,
+        default: null
+    },
+    phoneNumberWithoutCode: {
+        type: String,
+        trim: true,
+        default: null
+    },
     password: { type: String }, // Hashed password (optional for social login)
-    profilePicture: { type: String }, // Stored uploads path (e.g., profile-pictures/name.webp)
+    profilePicture: { type: String, default: "profileless.png" }, // Stored uploads path (e.g., profile-pictures/name.webp)
     // Country
     country: {
         type: Schema.Types.ObjectId,
@@ -100,9 +110,10 @@ const usersSchema = new Schema({
         createdAt: { type: Date, default: Date.now }
     }],
 
-    // Contacted Properties
+    // Contacted Items (Properties/Projects)
     contactedProperties: [{
         property: { type: Schema.Types.ObjectId, ref: 'Properties' },
+        project: { type: Schema.Types.ObjectId, ref: 'Newprojects' },
         agent: { type: Schema.Types.ObjectId, ref: 'Agents' },
         contactMethod: {
             type: String,
@@ -145,6 +156,23 @@ const usersSchema = new Schema({
         savedSearches: { type: Boolean, default: true }
     },
 
+    // Firebase Cloud Messaging — one entry per device/session (web / android / ios)
+    fcmTokens: [{
+        token: { type: String, required: true, trim: true },
+        platform: {
+            type: String,
+            enum: ['web', 'android', 'ios'],
+            required: true
+        },
+        deviceId: { type: String, trim: true ,default: null},
+        deviceModel: { type: String, trim: true ,default: null},
+        deviceVersion: { type: String, trim: true ,default: null},
+        isActive: { type: Boolean, default: true },
+        lastSeenAt: { type: Date, default: Date.now },
+        createdAt: { type: Date, default: Date.now },
+        updatedAt: { type: Date, default: Date.now }
+    }],
+
     // Account Status
     isActive: { type: Boolean, default: true },
     isBanned: { type: Boolean, default: false },
@@ -172,6 +200,7 @@ usersSchema.index({ email: 1 });
 usersSchema.index({ 'location.coordinates': '2dsphere' });
 usersSchema.index({ isActive: 1, isBanned: 1 });
 usersSchema.index({ createdAt: -1 });
+usersSchema.index({ 'fcmTokens.token': 1 });
 
 // Virtual for full name
 usersSchema.virtual('fullName').get(function () {

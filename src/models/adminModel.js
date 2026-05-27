@@ -25,7 +25,7 @@ const adminSchema = new Schema({
         trim: true
     },
     password: { type: String, required: true },
-    avatar: String,
+    profilePicture: { type: String, default: "profileless.png" },
 
     // Roles & Permissions
     role: {
@@ -48,6 +48,12 @@ const adminSchema = new Schema({
     passwordResetOTPExpires: Date,
     loginAttempts: { type: Number, default: 0 },
     lockUntil: Date,
+
+    // Session tokens (stored for refresh/logout validation)
+    access_token: String,
+    token_expires_at: Date,
+    refresh_token: String,
+    refresh_token_expires_at: Date,
 
     // Metadata
     createdAt: { type: Date, default: Date.now },

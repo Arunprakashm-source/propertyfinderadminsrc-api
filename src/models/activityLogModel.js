@@ -33,7 +33,7 @@ const activityLogSchema = new Schema({
     resource: {
         resourceType: {
             type: String,
-            enum: ['property', 'agent', 'agency', 'user', 'inquiry', 'project', 'review', 'report', 'deal', 'setting', 'other'],
+            enum: ['property', 'agent', 'agency', 'developer', 'user', 'inquiry', 'project', 'review', 'report', 'deal', 'setting', 'other'],
             required: true
         },
         resourceId: Schema.Types.ObjectId

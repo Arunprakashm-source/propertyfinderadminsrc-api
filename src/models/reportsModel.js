@@ -6,31 +6,37 @@ const reportsSchema = new Schema({
     reportedBy: {
         type: Schema.Types.ObjectId,
         ref: 'User',
-        required: true
+        required: false
+    },
+    reporterEmail: {
+        type: String,
+        required: false
     },
     // Reported Item
     reportType: {
         type: String,
         enum: ['property', 'agent', 'agency', 'user', 'review', 'project'],
-        required: true
+        required: false,
     },
     reportedItem: {
         type: Schema.Types.ObjectId,
-        required: true,
+        required: false,
         refPath: 'reportType'
     },
     // Report Details
     userType: {
         type: String,
-        required: true
+        required: false,
+        enum: ['developer', 'agency', 'agent','user'],
+        default: 'user'
     }, // From dropdown in frontend (e.g., "buyer", "renter", "agent")
     reason: {
         type: String,
-        required: true
+        required: false
     }, // From dropdown (e.g., "fraud", "inappropriate content", "spam")
     description: {
         type: String,
-        maxlength: 2000
+        maxlength: 5000
     },
     // Evidence
     attachments: [String], // URLs to screenshots or documents

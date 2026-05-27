@@ -20,8 +20,18 @@ const agenciesSchema = new Schema({
         required: false,
         trim: true
     },
+    phoneCode: {
+        type: String,
+        trim: true,
+        default: null
+    },
+    phoneNumberWithoutCode: {
+        type: String,
+        trim: true,
+        default: null
+    },
     password: { type: String, required: false },
-    profilePicture: { type: String },
+    profilePicture: { type: String, default: "profileless.png" },
 
     // Registration Details
     orn: {
@@ -109,6 +119,18 @@ const agenciesSchema = new Schema({
         totalCount: { type: Number, default: 0 }
     },
 
+    // Preferences
+    preferences: {
+        currency: { type: String, default: 'AED' },
+        language: { type: String, default: 'en' },
+        notificationSettings: {
+            email: { type: Boolean, default: true },
+            sms: { type: Boolean, default: false },
+            push: { type: Boolean, default: true }
+        },
+        savedSearches: { type: Boolean, default: true }
+    },
+
     // Subscription Details
     subscription: {
         plan: { type: Schema.Types.ObjectId, ref: 'SubscriptionPlan' },
@@ -173,6 +195,9 @@ const agenciesSchema = new Schema({
     // Password Reset
     resetPasswordToken: String,
     resetPasswordExpires: Date,
+    passwordResetOTPHash: String,
+    passwordResetOTPExpires: Date,
+    passwordResetEligibleUntil: Date,
 
     // Session
     access_token: String,
@@ -181,6 +206,23 @@ const agenciesSchema = new Schema({
     refresh_token_expires_at: Date,
     lastLogin: Date,
     lastActiveAt: Date,
+
+    // Firebase Cloud Messaging — one entry per device/session (web / android / ios)
+    fcmTokens: [{
+        token: { type: String, required: true, trim: true },
+        platform: {
+            type: String,
+            enum: ['web', 'android', 'ios'],
+            required: true
+        },
+        deviceId: { type: String, trim: true, default: null },
+        deviceModel: { type: String, trim: true, default: null },
+        deviceVersion: { type: String, trim: true, default: null },
+        isActive: { type: Boolean, default: true },
+        lastSeenAt: { type: Date, default: Date.now },
+        createdAt: { type: Date, default: Date.now },
+        updatedAt: { type: Date, default: Date.now }
+    }],
 
     // Timestamps
     createdAt: { type: Date, default: Date.now },
@@ -191,6 +233,7 @@ const agenciesSchema = new Schema({
 agenciesSchema.index({ isActive: 1, isVerified: 1 });
 agenciesSchema.index({ 'subscription.expiryDate': 1 });
 agenciesSchema.index({ createdAt: -1 });
+agenciesSchema.index({ 'fcmTokens.token': 1 });
 
 // Text index for search
 agenciesSchema.index({

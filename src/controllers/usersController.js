@@ -4,13 +4,172 @@ const UsersModel = require('../models/usersModel');
 const ActivityLog = require('../models/activityLogModel');
 const CountriesModel = require('../models/countriesModel');
 const uploadService = require('../services/uploadService');
-const { success, failure } = require('../utils/helpers');
+const {
+  success,
+  failure,
+  sanitizeUser,
+  formatPhoneNumber,
+  isPhone,
+  isEmail,
+} = require('../utils/helpers');
 const { logger } = require('../utils/logger');
 
-// Helper to get admin ID from request
-const getAdminId = (req) => {
-  return req.admin?.id || req.admin?._id || req.user?.id || req.user?._id;
+const DEFAULT_PROFILE_PICTURE = 'profileless.png';
+
+const getAdminId = (req) =>
+  req.admin?.id || req.admin?._id || req.user?.id || req.user?._id;
+
+const resolveUserProfilePicturePath = (profilePicture) => {
+  if (!profilePicture || profilePicture === DEFAULT_PROFILE_PICTURE) {
+    return null;
+  }
+  return profilePicture.includes('/') ? profilePicture : `img/user/${profilePicture}`;
 };
+
+const runWithTimeout = (promise, timeoutMs = 2500) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Operation timed out')), timeoutMs);
+    }),
+  ]);
+
+const cleanupDeletedUser = async ({ user, profilePath, adminId, deletedSnapshot, req }) => {
+  if (profilePath) {
+    await runWithTimeout(uploadService.delete(profilePath), 2500).catch((error) => {
+      logger.warn('Failed to delete user profile picture', {
+        error: error.message,
+        profilePath,
+      });
+    });
+  }
+
+  if (!adminId) {
+    return;
+  }
+
+  await ActivityLog.create({
+    actor: {
+      actorType: 'admin',
+      actorId: new mongoose.Types.ObjectId(adminId),
+    },
+    action: 'delete',
+    resource: {
+      resourceType: 'user',
+      resourceId: user._id,
+    },
+    description: 'User permanently deleted by admin',
+    metadata: deletedSnapshot,
+    requestDetails: {
+      ipAddress: req.ip || req.connection?.remoteAddress,
+      userAgent: req.get('user-agent'),
+    },
+    status: 'success',
+    timestamp: new Date(),
+  }).catch((logError) => {
+    logger.warn('Failed to log user deletion to ActivityLog', { error: logError.message });
+  });
+};
+
+const toBoolean = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return ['true', '1', 'yes', 'on'].includes(normalized);
+  }
+  return false;
+};
+
+const parseOptionalBoolean = (value, fieldName) => {
+  if (typeof value === 'undefined') return { value: undefined };
+  if (typeof value === 'boolean') return { value };
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return { value: true };
+    if (normalized === 'false') return { value: false };
+  }
+  return { error: `${fieldName} must be a boolean` };
+};
+
+const normalizePreferences = (preferences) => {
+  if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) {
+    return preferences || {};
+  }
+  return {
+    ...preferences,
+    notificationSettings:
+      preferences.notificationSettings
+      && typeof preferences.notificationSettings === 'object'
+      && !Array.isArray(preferences.notificationSettings)
+        ? { ...preferences.notificationSettings }
+        : preferences.notificationSettings,
+  };
+};
+
+const buildSafeUser = (user) => {
+  const safeUser = sanitizeUser(user);
+  delete safeUser.access_token;
+  delete safeUser.refresh_token;
+  delete safeUser.refresh_token_expires_at;
+  delete safeUser.token_expires_at;
+  delete safeUser.passwordResetOTPHash;
+  delete safeUser.passwordResetOTPExpires;
+  safeUser.phoneCode = safeUser.phoneCode || null;
+  safeUser.phoneNumberWithoutCode = safeUser.phoneNumberWithoutCode || null;
+  safeUser.preferences = normalizePreferences(safeUser.preferences);
+  return safeUser;
+};
+
+const applyStatusUpdates = (user, { isActive, isBanned, bannedReason }, adminId, changes) => {
+  let updated = false;
+
+  if (typeof isBanned !== 'undefined') {
+    Object.assign(changes.before, pickStatusBefore(user));
+    if (isBanned === true) {
+      if (!bannedReason || typeof bannedReason !== 'string' || bannedReason.trim().length < 10) {
+        return {
+          updated: false,
+          error: 'bannedReason is required and must be at least 10 characters when banning a user',
+        };
+      }
+      user.isBanned = true;
+      user.bannedReason = bannedReason.trim();
+      user.bannedAt = new Date();
+      user.bannedBy = adminId ? new mongoose.Types.ObjectId(adminId) : null;
+      user.isActive = false;
+    } else {
+      user.isBanned = false;
+      user.bannedReason = null;
+      user.bannedAt = null;
+      user.bannedBy = null;
+      user.isActive = typeof isActive === 'undefined' ? true : isActive;
+    }
+    Object.assign(changes.after, pickStatusAfter(user));
+    updated = true;
+  } else if (typeof isActive !== 'undefined') {
+    changes.before.isActive = user.isActive;
+    user.isActive = isActive;
+    changes.after.isActive = isActive;
+    updated = true;
+  }
+
+  return { updated };
+};
+
+const pickStatusBefore = (user) => ({
+  isBanned: user.isBanned,
+  bannedReason: user.bannedReason,
+  bannedAt: user.bannedAt,
+  isActive: user.isActive,
+});
+
+const pickStatusAfter = (user) => ({
+  isBanned: user.isBanned,
+  bannedReason: user.bannedReason,
+  bannedAt: user.bannedAt,
+  isActive: user.isActive,
+});
 
 /**
  * @swagger
@@ -354,7 +513,7 @@ const getUserDetails = asyncHandler(async (req, res) => {
  * @swagger
  * /users/{id}:
  *   put:
- *     summary: Update user status (activate/deactivate, ban/unban)
+ *     summary: Update user profile and account status (admin)
  *     tags: [Admin - User Management]
  *     security:
  *       - bearerAuth: []
@@ -365,6 +524,9 @@ const getUserDetails = asyncHandler(async (req, res) => {
  *         schema:
  *           type: string
  *         description: User ObjectId
+ *     description: |
+ *       Updates profile fields (same as consumer profile API) and moderation status.
+ *       Send only fields to change. Banning requires bannedReason (min 10 chars).
  *     requestBody:
  *       required: true
  *       content:
@@ -372,6 +534,28 @@ const getUserDetails = asyncHandler(async (req, res) => {
  *           schema:
  *             type: object
  *             properties:
+ *               firstName:
+ *                 type: string
+ *               lastName:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               phoneNumber:
+ *                 type: string
+ *               phoneCode:
+ *                 type: string
+ *                 example: "+971"
+ *               countryId:
+ *                 type: string
+ *               preferences:
+ *                 type: object
+ *               location:
+ *                 type: object
+ *               isEmailVerified:
+ *                 type: boolean
+ *               isPhoneVerified:
+ *                 type: boolean
  *               isActive:
  *                 type: boolean
  *               isBanned:
@@ -381,106 +565,257 @@ const getUserDetails = asyncHandler(async (req, res) => {
  *                 minLength: 10
  *     responses:
  *       200:
- *         description: User status updated successfully
+ *         description: User updated successfully
  *       400:
  *         description: Validation error
  *       404:
- *         description: User not found
+ *         description: User or country not found
+ *       409:
+ *         description: Email already in use
  */
-const updateUserStatus = asyncHandler(async (req, res) => {
+const updateUser = asyncHandler(async (req, res) => {
   try {
     const { id } = req.params;
-    const { isActive, isBanned, bannedReason } = req.body;
     const adminId = getAdminId(req);
+    const body = req.body || {};
 
-    // Minimal validation
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return failure(res, 400, 'Invalid user ID format');
     }
 
-    // At least one field must be provided
-    if (typeof isActive === 'undefined' && typeof isBanned === 'undefined' && !bannedReason) {
-      return failure(res, 400, 'At least one field (isActive, isBanned, or bannedReason) must be provided');
-    }
+    const {
+      firstName,
+      lastName,
+      email,
+      phoneNumber,
+      countryId,
+      phoneCode,
+      preferences,
+      location,
+      bannedReason,
+    } = body;
 
-    // Validate boolean types
-    if (typeof isActive !== 'undefined' && typeof isActive !== 'boolean') {
-      return failure(res, 400, 'isActive must be a boolean');
-    }
-    if (typeof isBanned !== 'undefined' && typeof isBanned !== 'boolean') {
-      return failure(res, 400, 'isBanned must be a boolean');
-    }
+    const isActiveParsed = parseOptionalBoolean(body.isActive, 'isActive');
+    if (isActiveParsed.error) return failure(res, 400, isActiveParsed.error);
+    const isBannedParsed = parseOptionalBoolean(body.isBanned, 'isBanned');
+    if (isBannedParsed.error) return failure(res, 400, isBannedParsed.error);
+    const isEmailVerifiedParsed = parseOptionalBoolean(body.isEmailVerified, 'isEmailVerified');
+    if (isEmailVerifiedParsed.error) return failure(res, 400, isEmailVerifiedParsed.error);
+    const isPhoneVerifiedParsed = parseOptionalBoolean(body.isPhoneVerified, 'isPhoneVerified');
+    if (isPhoneVerifiedParsed.error) return failure(res, 400, isPhoneVerifiedParsed.error);
+
+    const isActive = isActiveParsed.value;
+    const isBanned = isBannedParsed.value;
 
     const user = await UsersModel.findById(id);
     if (!user) {
       return failure(res, 404, 'User not found');
     }
 
-    // Track changes for activity log
-    const changes = {
-      before: {},
-      after: {},
+    const changes = { before: {}, after: {} };
+    let updatesApplied = false;
+    let country;
+
+    const trackChange = (field, beforeVal, afterVal) => {
+      if (JSON.stringify(beforeVal) !== JSON.stringify(afterVal)) {
+        changes.before[field] = beforeVal;
+        changes.after[field] = afterVal;
+      }
     };
 
-    // Handle ban/unban logic
-    if (typeof isBanned !== 'undefined') {
-      changes.before.isBanned = user.isBanned;
-      changes.before.bannedReason = user.bannedReason;
-      changes.before.bannedAt = user.bannedAt;
-      changes.before.bannedBy = user.bannedBy;
-      changes.before.isActive = user.isActive;
+    if (typeof firstName !== 'undefined') {
+      const normalizedFirstName = typeof firstName === 'string' ? firstName.trim() : firstName;
+      if (!normalizedFirstName) {
+        return failure(res, 400, 'Invalid first name provided');
+      }
+      trackChange('firstName', user.firstName, normalizedFirstName);
+      user.firstName = normalizedFirstName;
+      updatesApplied = true;
+    }
 
-      if (isBanned === true) {
-        // Banning user
-        if (!bannedReason || typeof bannedReason !== 'string' || bannedReason.trim().length < 10) {
-          return failure(res, 400, 'bannedReason is required and must be at least 10 characters when banning a user');
+    if (typeof lastName !== 'undefined') {
+      const normalizedLastName = typeof lastName === 'string' ? lastName.trim() : lastName;
+      if (!normalizedLastName) {
+        return failure(res, 400, 'Invalid last name provided');
+      }
+      trackChange('lastName', user.lastName, normalizedLastName);
+      user.lastName = normalizedLastName;
+      updatesApplied = true;
+    }
+
+    if (typeof email !== 'undefined') {
+      const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+      if (!isEmail(normalizedEmail)) {
+        return failure(res, 400, 'A valid email is required');
+      }
+      const duplicate = await UsersModel.findOne({
+        email: normalizedEmail,
+        _id: { $ne: user._id },
+      }).select('_id');
+      if (duplicate) {
+        return failure(res, 409, 'Email is already in use', 'CONFLICT');
+      }
+      trackChange('email', user.email, normalizedEmail);
+      user.email = normalizedEmail;
+      updatesApplied = true;
+    }
+
+    if (countryId) {
+      if (!mongoose.Types.ObjectId.isValid(countryId)) {
+        return failure(res, 400, 'Invalid country ID format');
+      }
+      country = await CountriesModel.findById(countryId);
+      if (!country) {
+        return failure(res, 404, 'Selected country not found');
+      }
+      trackChange('country', user.country?.toString(), country._id.toString());
+      user.country = country._id;
+      updatesApplied = true;
+    }
+
+    let resolvedPhoneCode = (phoneCode || '').trim();
+    if (!resolvedPhoneCode && country?.phoneCode) {
+      resolvedPhoneCode = country.phoneCode;
+    }
+
+    if (typeof phoneNumber !== 'undefined') {
+      const normalizedPhoneNumber = `${phoneNumber || ''}`.trim();
+      if (!normalizedPhoneNumber) {
+        return failure(res, 400, 'Invalid phone number provided');
+      }
+      if (!/^[\d\s()+-]+$/.test(normalizedPhoneNumber)) {
+        return failure(res, 400, 'Phone number can contain only digits and +, -, (, )');
+      }
+
+      const localPhoneDigits = normalizedPhoneNumber.replace(/\D/g, '');
+      if (localPhoneDigits.length < 6 || localPhoneDigits.length > 12) {
+        return failure(res, 400, 'Phone number must be between 6 and 12 digits');
+      }
+
+      if (!resolvedPhoneCode) {
+        const fallbackCountryId = country ? country._id : user.country;
+        if (fallbackCountryId) {
+          const fallbackCountry = await CountriesModel.findById(fallbackCountryId).select(
+            'phoneCode'
+          );
+          if (fallbackCountry?.phoneCode) {
+            resolvedPhoneCode = fallbackCountry.phoneCode;
+          }
         }
-        user.isBanned = true;
-        user.bannedReason = bannedReason.trim();
-        user.bannedAt = new Date();
-        user.bannedBy = adminId ? new mongoose.Types.ObjectId(adminId) : null;
-        user.isActive = false; // Automatically deactivate when banned
+      }
 
-        changes.after.isBanned = true;
-        changes.after.bannedReason = bannedReason.trim();
-        changes.after.bannedAt = user.bannedAt;
-        changes.after.bannedBy = user.bannedBy;
-        changes.after.isActive = false;
-      } else {
-        // Unbanning user - automatically activate unless explicitly set to false
-        user.isBanned = false;
-        user.bannedReason = null;
-        user.bannedAt = null;
-        user.bannedBy = null;
-        
-        // Automatically activate when unbanning, unless isActive is explicitly set to false
-        if (typeof isActive === 'undefined') {
-          user.isActive = true;
-        } else {
-          user.isActive = isActive;
+      if (!resolvedPhoneCode) {
+        return failure(res, 400, 'Country dial code is required for phone updates');
+      }
+
+      const normalizedResolvedPhoneCode = formatPhoneNumber(resolvedPhoneCode);
+      const normalizedPhone = formatPhoneNumber(
+        `${normalizedResolvedPhoneCode}${normalizedPhoneNumber}`
+      );
+      if (!isPhone(normalizedPhone)) {
+        return failure(res, 400, 'Invalid phone number format');
+      }
+
+      trackChange('phoneNumber', user.phoneNumber, normalizedPhone);
+      user.phoneNumber = normalizedPhone;
+      user.phoneCode = normalizedResolvedPhoneCode || null;
+      user.phoneNumberWithoutCode = localPhoneDigits || null;
+      updatesApplied = true;
+    }
+
+    if (preferences && typeof preferences === 'object' && !Array.isArray(preferences)) {
+      user.preferences = normalizePreferences(user.preferences) || {};
+
+      if (typeof preferences.currency !== 'undefined') {
+        user.preferences.currency =
+          String(preferences.currency || '').trim() || user.preferences.currency;
+        updatesApplied = true;
+      }
+      if (typeof preferences.language !== 'undefined') {
+        user.preferences.language =
+          String(preferences.language || '').trim() || user.preferences.language;
+        updatesApplied = true;
+      }
+      if (typeof preferences.savedSearches !== 'undefined') {
+        user.preferences.savedSearches = toBoolean(preferences.savedSearches);
+        updatesApplied = true;
+      }
+      if (
+        preferences.notificationSettings
+        && typeof preferences.notificationSettings === 'object'
+        && !Array.isArray(preferences.notificationSettings)
+      ) {
+        const ns = preferences.notificationSettings;
+        if (
+          !user.preferences.notificationSettings
+          || typeof user.preferences.notificationSettings !== 'object'
+        ) {
+          user.preferences.notificationSettings = {};
         }
-
-        changes.after.isBanned = false;
-        changes.after.bannedReason = null;
-        changes.after.bannedAt = null;
-        changes.after.bannedBy = null;
-        changes.after.isActive = user.isActive;
+        if (typeof ns.email !== 'undefined') {
+          user.preferences.notificationSettings.email = toBoolean(ns.email);
+          updatesApplied = true;
+        }
+        if (typeof ns.sms !== 'undefined') {
+          user.preferences.notificationSettings.sms = toBoolean(ns.sms);
+          updatesApplied = true;
+        }
+        if (typeof ns.push !== 'undefined') {
+          user.preferences.notificationSettings.push = toBoolean(ns.push);
+          updatesApplied = true;
+        }
       }
     }
 
-    // Handle isActive separately (if not already set by ban/unban logic)
-    if (typeof isActive !== 'undefined' && typeof isBanned === 'undefined') {
-      changes.before.isActive = user.isActive;
-      user.isActive = isActive;
-      changes.after.isActive = isActive;
+    if (location && typeof location === 'object' && !Array.isArray(location)) {
+      user.location = user.location || {};
+      if (typeof location.city !== 'undefined') {
+        user.location.city = String(location.city || '').trim();
+        updatesApplied = true;
+      }
+      if (typeof location.state !== 'undefined') {
+        user.location.state = String(location.state || '').trim();
+        updatesApplied = true;
+      }
+      if (typeof location.country !== 'undefined') {
+        user.location.country = String(location.country || '').trim();
+        updatesApplied = true;
+      }
+    }
+
+    if (typeof isEmailVerifiedParsed.value !== 'undefined') {
+      trackChange('isEmailVerified', user.isEmailVerified, isEmailVerifiedParsed.value);
+      user.isEmailVerified = isEmailVerifiedParsed.value;
+      updatesApplied = true;
+    }
+
+    if (typeof isPhoneVerifiedParsed.value !== 'undefined') {
+      trackChange('isPhoneVerified', user.isPhoneVerified, isPhoneVerifiedParsed.value);
+      user.isPhoneVerified = isPhoneVerifiedParsed.value;
+      updatesApplied = true;
+    }
+
+    const statusResult = applyStatusUpdates(
+      user,
+      { isActive, isBanned, bannedReason },
+      adminId,
+      changes
+    );
+    if (statusResult.error) {
+      return failure(res, 400, statusResult.error);
+    }
+    if (statusResult.updated) {
+      updatesApplied = true;
+    }
+
+    if (!updatesApplied) {
+      return failure(res, 400, 'No valid fields provided for update');
     }
 
     await user.save();
-
-    // Populate bannedBy for response
+    await user.populate('country', 'name code phoneCode flag isActive');
     await user.populate('bannedBy', 'firstName lastName email');
 
-    // Log to ActivityLog
     try {
       await ActivityLog.create({
         actor: {
@@ -492,7 +827,7 @@ const updateUserStatus = asyncHandler(async (req, res) => {
           resourceType: 'user',
           resourceId: user._id,
         },
-        description: 'User status updated by admin',
+        description: 'User updated by admin',
         changes,
         requestDetails: {
           ipAddress: req.ip || req.connection.remoteAddress,
@@ -502,26 +837,21 @@ const updateUserStatus = asyncHandler(async (req, res) => {
         timestamp: new Date(),
       });
     } catch (logError) {
-      logger.warn('Failed to log user status update to ActivityLog', { error: logError.message });
+      logger.warn('Failed to log user update to ActivityLog', { error: logError.message });
     }
 
-    return success(res, 'User status updated successfully', {
+    const safeUser = buildSafeUser(user);
+    const profilePictureUrl = uploadService.getUserProfileImageUrl(user.profilePicture);
+
+    return success(res, 'User updated successfully', {
       user: {
-        _id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        isActive: user.isActive,
-        isBanned: user.isBanned,
-        bannedReason: user.bannedReason,
-        bannedAt: user.bannedAt,
-        bannedBy: user.bannedBy,
-        updatedAt: user.updatedAt,
+        ...safeUser,
+        profilePictureUrl: profilePictureUrl || null,
       },
     });
   } catch (error) {
-    logger.error('Update user status failed', { error: error.message, stack: error.stack });
-    return failure(res, 500, 'Failed to update user status', 'ERROR', error.message);
+    logger.error('Update user failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to update user', 'ERROR', error.message);
   }
 });
 
@@ -529,7 +859,11 @@ const updateUserStatus = asyncHandler(async (req, res) => {
  * @swagger
  * /users/{id}:
  *   delete:
- *     summary: Delete user account (soft delete)
+ *     summary: Permanently delete a user
+ *     description: |
+ *       Removes the user document from MongoDB (not a soft delete). Revokes tokens and
+ *       removes the profile image from storage when applicable. Activity is logged before
+ *       deletion. Use `PUT /users/{id}` with `isActive: false` if you only need to deactivate.
  *     tags: [Admin - User Management]
  *     security:
  *       - bearerAuth: []
@@ -542,62 +876,51 @@ const updateUserStatus = asyncHandler(async (req, res) => {
  *         description: User ObjectId
  *     responses:
  *       200:
- *         description: User account deleted successfully
+ *         description: User permanently deleted
+ *       401:
+ *         description: Admin authentication required
  *       404:
- *         description: User not found
+ *         description: User not found or already deleted
  */
 const deleteUser = asyncHandler(async (req, res) => {
   try {
     const { id } = req.params;
     const adminId = getAdminId(req);
 
-    // Minimal validation
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-      return failure(res, 400, 'Invalid user ID format');
+      return failure(res, 400, 'Invalid user ID format', 'VALIDATION_ERROR');
     }
 
-    const user = await UsersModel.findById(id);
+    const user = await UsersModel.findById(id).lean();
     if (!user) {
-      return failure(res, 404, 'User not found');
+      return failure(res, 404, 'User not found', 'NOT_FOUND');
     }
 
-    // Soft delete: set isActive=false (deletedAt/deletedBy fields not in schema)
-    user.isActive = false;
+    const deletedSnapshot = {
+      _id: user._id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phoneNumber: user.phoneNumber,
+    };
 
-    await user.save();
+    const profilePath = resolveUserProfilePicturePath(user.profilePicture);
+    const { deletedCount } = await UsersModel.deleteOne({ _id: user._id });
 
-    // Log to ActivityLog
-    try {
-      await ActivityLog.create({
-        actor: {
-          actorType: 'admin',
-          actorId: adminId ? new mongoose.Types.ObjectId(adminId) : null,
-        },
-        action: 'delete',
-        resource: {
-          resourceType: 'user',
-          resourceId: user._id,
-        },
-        description: 'User account deleted by admin',
-        metadata: {
-          userId: user._id.toString(),
-          email: user.email,
-        },
-        requestDetails: {
-          ipAddress: req.ip || req.connection.remoteAddress,
-          userAgent: req.get('user-agent'),
-        },
-        status: 'success',
-        timestamp: new Date(),
+    if (deletedCount === 0) {
+      return failure(res, 404, 'User not found', 'NOT_FOUND');
+    }
+
+    setImmediate(() => {
+      cleanupDeletedUser({ user, profilePath, adminId, deletedSnapshot, req }).catch((error) => {
+        logger.warn('Post-delete cleanup failed', { error: error.message, userId: user._id });
       });
-    } catch (logError) {
-      logger.warn('Failed to log user deletion to ActivityLog', { error: logError.message });
-    }
+    });
 
-    return success(res, 'User account deleted successfully', {});
+    return success(res, 'User deleted permanently', { deleted: deletedSnapshot });
   } catch (error) {
     logger.error('Delete user failed', { error: error.message, stack: error.stack });
-    return failure(res, 500, 'Failed to delete user', 'ERROR', error.message);
+    return failure(res, 500, 'Failed to delete user', 'SERVER_ERROR', error.message);
   }
 });
 
@@ -810,7 +1133,7 @@ const getUserActivityLog = asyncHandler(async (req, res) => {
 module.exports = {
   listUsers,
   getUserDetails,
-  updateUserStatus,
+  updateUser,
   deleteUser,
   getUserActivityLog,
 };

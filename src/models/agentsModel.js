@@ -21,13 +21,23 @@ const agentsSchema = new Schema({
         required: false,
         trim: true
     },
+    phoneCode: {
+        type: String,
+        trim: true,
+        default: null
+    },
+    phoneNumberWithoutCode: {
+        type: String,
+        trim: true,
+        default: null
+    },
     whatsappNumber: {
         type: String,
         trim: true
     },
     isWhatsappPrimary: { type: Boolean, default: false },
     password: { type: String, required: false },
-    profilePicture: { type: String },
+    profilePicture: { type: String, default: "profileless.png" },
 
     // Agent Type
     agentType: {
@@ -37,9 +47,9 @@ const agentsSchema = new Schema({
     },
 
     // Professional Information
-    specialization: { type: String }, // Job title
-    experience: { type: Number }, // Years of experience
-    experienceSince: { type: Date },
+    specialization: { type: Schema.Types.ObjectId, ref: 'JobTitles' }, // Job title
+    experience: { type: String, trim: true, default: '1' }, // Years of experience
+    experienceSince: { type: Date , Default: Date.now},
     brokerLicenseNumber: {
         type: String,
         required: false,
@@ -55,7 +65,8 @@ const agentsSchema = new Schema({
     phoneVerificationExpires: Date,
     isVerified: { type: Boolean, default: false }, // Overall verification badge
     verifiedAt: Date,
-    verifiedBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
+    verifiedBy: { type: Schema.Types.ObjectId, refPath: 'verifiedByModel' },
+    verifiedByModel: { type: String, enum: ['Agencies', 'Admin'], default: null }, // Agency (primary) or Admin
 
     // Agency Relationship
     agency: {
@@ -63,7 +74,6 @@ const agentsSchema = new Schema({
         ref: 'Agencies',
         required: true
     },
-    position: { type: String }, // e.g., 'Manager', 'Senior Agent'
 
     // Performance Metrics
     ratings: {
@@ -130,6 +140,18 @@ const agentsSchema = new Schema({
     description: { type: String, maxlength: 2000 },
     aboutMe: { type: String, maxlength: 2000 },
 
+    // Preferences
+    preferences: {
+        currency: { type: String, default: 'AED' },
+        language: { type: String, default: 'en' },
+        notificationSettings: {
+            email: { type: Boolean, default: true },
+            sms: { type: Boolean, default: false },
+            push: { type: Boolean, default: true }
+        },
+        savedSearches: { type: Boolean, default: true }
+    },
+
     // Awards
     awards: [{
         title: String,
@@ -178,7 +200,7 @@ const agentsSchema = new Schema({
     // Invitation Status
     invitationStatus: {
         type: String,
-        enum: ['pending', 'accepted', 'expired'],
+        enum: ['pending', 'accepted', 'expired', 'declined'],
         default: 'pending'
     },
     invitationToken: String,
@@ -188,6 +210,9 @@ const agentsSchema = new Schema({
     // Password Reset
     resetPasswordToken: String,
     resetPasswordExpires: Date,
+    passwordResetOTPHash: String,
+    passwordResetOTPExpires: Date,
+    passwordResetEligibleUntil: Date,
 
     // Session
     access_token: String,
@@ -197,6 +222,23 @@ const agentsSchema = new Schema({
     lastLogin: Date,
     lastActiveAt: Date,
 
+    // Firebase Cloud Messaging — one entry per device/session (web / android / ios)
+    fcmTokens: [{
+        token: { type: String, required: true, trim: true },
+        platform: {
+            type: String,
+            enum: ['web', 'android', 'ios'],
+            required: true
+        },
+        deviceId: { type: String, trim: true, default: null },
+        deviceModel: { type: String, trim: true, default: null },
+        deviceVersion: { type: String, trim: true, default: null },
+        isActive: { type: Boolean, default: true },
+        lastSeenAt: { type: Date, default: Date.now },
+        createdAt: { type: Date, default: Date.now },
+        updatedAt: { type: Date, default: Date.now }
+    }],
+
     // Timestamps
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
@@ -204,17 +246,17 @@ const agentsSchema = new Schema({
 
 // Indexes
 agentsSchema.index({ agency: 1, isActive: 1 });
+agentsSchema.index({ agency: 1, isVerified: 1, isActive: 1 });
+agentsSchema.index({ agency: 1, invitationStatus: 1, isVerified: 1 });
 agentsSchema.index({ agentType: 1, isActive: 1 });
 agentsSchema.index({ brokerLicenseNumber: 1 });
 agentsSchema.index({ nationality: 1, languages: 1 });
 agentsSchema.index({ 'ratings.average': -1 });
 agentsSchema.index({ createdAt: -1 });
+agentsSchema.index({ 'fcmTokens.token': 1 });
 
-// Text index for search
-agentsSchema.index({
-    fullName: 'text',
-    specialization: 'text'
-});
+// Text index for search (specialization is now ObjectId ref, so not included)
+agentsSchema.index({ fullName: 'text' });
 
 const Agents = model('Agents', agentsSchema);
 module.exports = Agents;

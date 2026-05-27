@@ -613,17 +613,65 @@ if (!uploadService.uploadsBaseUrl) {
   uploadService.uploadsBaseUrl = UPLOADS_BASE_URL;
 }
 
-/** Get full URL for user profile image. DB stores filename only. */
-uploadService.getUserProfileImageUrl = (filename) => {
+const buildProfileImageUrl = (folder, filename) => {
   if (!filename || typeof filename !== 'string') return null;
   const name = String(filename).trim().replace(/^\/+/, '').replace(/^.*\//, '');
-  if (!name) return null;
+  if (!name || name === 'profileless.png') return null;
   const isLocal = (process.env.UPLOAD_STORAGE || '').toLowerCase() === 'local';
   if (isLocal) {
-    return `${UPLOADS_BASE_URL}/img/user/${name}`;
+    return `${UPLOADS_BASE_URL}/${folder}/${name}`;
   }
   const cloud = (process.env.AWS_CLOUDFRONT_URL || '').replace(/\/$/, '');
-  return cloud ? `${cloud}/img/user/${name}` : null;
+  return cloud ? `${cloud}/${folder}/${name}` : null;
+};
+
+/** Get full URL for user profile image. DB stores filename only. */
+uploadService.getUserProfileImageUrl = (filename) =>
+  buildProfileImageUrl('img/user', filename);
+
+/** Get full URL for agent profile image. */
+uploadService.getAgentProfileImageUrl = (filename) => {
+  if (!filename || typeof filename !== 'string') return null;
+  const trimmed = String(filename).trim();
+  if (trimmed.includes('/')) {
+    const isLocal = (process.env.UPLOAD_STORAGE || '').toLowerCase() === 'local';
+    if (isLocal) {
+      return `${UPLOADS_BASE_URL}/${trimmed.replace(/^\/+/, '')}`;
+    }
+    const cloud = (process.env.AWS_CLOUDFRONT_URL || '').replace(/\/$/, '');
+    return cloud ? `${cloud}/${trimmed.replace(/^\/+/, '')}` : null;
+  }
+  return buildProfileImageUrl('img/agents', filename);
+};
+
+/** Get full URL for agency profile image. */
+uploadService.getAgencyProfileImageUrl = (filename) => {
+  if (!filename || typeof filename !== 'string') return null;
+  const trimmed = String(filename).trim();
+  if (trimmed.includes('/')) {
+    const isLocal = (process.env.UPLOAD_STORAGE || '').toLowerCase() === 'local';
+    if (isLocal) {
+      return `${UPLOADS_BASE_URL}/${trimmed.replace(/^\/+/, '')}`;
+    }
+    const cloud = (process.env.AWS_CLOUDFRONT_URL || '').replace(/\/$/, '');
+    return cloud ? `${cloud}/${trimmed.replace(/^\/+/, '')}` : null;
+  }
+  return buildProfileImageUrl('img/agency', filename);
+};
+
+/** Get full URL for developer logo / profile image. */
+uploadService.getDeveloperProfileImageUrl = (filename) => {
+  if (!filename || typeof filename !== 'string') return null;
+  const trimmed = String(filename).trim();
+  if (trimmed.includes('/')) {
+    const isLocal = (process.env.UPLOAD_STORAGE || '').toLowerCase() === 'local';
+    if (isLocal) {
+      return `${UPLOADS_BASE_URL}/${trimmed.replace(/^\/+/, '')}`;
+    }
+    const cloud = (process.env.AWS_CLOUDFRONT_URL || '').replace(/\/$/, '');
+    return cloud ? `${cloud}/${trimmed.replace(/^\/+/, '')}` : null;
+  }
+  return buildProfileImageUrl('img/developer', filename);
 };
 
 module.exports = uploadService;

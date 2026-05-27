@@ -24,6 +24,10 @@ const { sendVerificationEmail } = require('../services/emailService');
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME_MS = 15 * 60 * 1000; // 15 minutes
 const PROFILE_PICTURE_FOLDER = 'admin-profile-pictures';
+const DEFAULT_PROFILE_PICTURE = 'profileless.png';
+
+const isUploadedProfilePicture = (path) =>
+  Boolean(path) && path !== DEFAULT_PROFILE_PICTURE && !String(path).endsWith(`/${DEFAULT_PROFILE_PICTURE}`);
 
 const normalizeEmail = (email = '') => email.toString().toLowerCase().trim();
 
@@ -34,10 +38,16 @@ const buildSafeAdmin = (admin) => {
   delete safe.lockUntil;
   delete safe.resetPasswordToken;
   delete safe.resetPasswordExpires;
+  delete safe.passwordResetOTPHash;
+  delete safe.passwordResetOTPExpires;
   delete safe.access_token;
   delete safe.token_expires_at;
   delete safe.refresh_token;
   delete safe.refresh_token_expires_at;
+  delete safe.avatar;
+  if (!safe.profilePicture) {
+    safe.profilePicture = DEFAULT_PROFILE_PICTURE;
+  }
   return safe;
 };
 
@@ -87,8 +97,84 @@ const resetLoginAttempts = async (admin) => {
 };
 
 /**
- * Admin login
- * Body: { email, password }
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     summary: Admin login
+ *     description: |
+ *       Authenticates an admin with email and password. Returns a JWT access/refresh pair
+ *       and a sanitized admin profile. Failed attempts are counted; the account is locked
+ *       for 15 minutes after 5 failed attempts.
+ *     tags: [Admin - Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: admin@example.com
+ *               password:
+ *                 type: string
+ *                 format: password
+ *                 example: secret123
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Login successful
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     admin:
+ *                       $ref: '#/components/schemas/AdminSafe'
+ *                     tokens:
+ *                       $ref: '#/components/schemas/AdminTokens'
+ *       400:
+ *         description: Validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       401:
+ *         description: Invalid credentials
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       403:
+ *         description: Admin account disabled
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       423:
+ *         description: Account temporarily locked
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
  */
 const login = asyncHandler(async (req, res) => {
   try {
@@ -172,8 +258,66 @@ const login = asyncHandler(async (req, res) => {
 });
 
 /**
- * Send OTP to admin email for password reset
- * Body: { email }
+ * @swagger
+ * /auth/send-otp:
+ *   post:
+ *     summary: Send password reset OTP
+ *     description: |
+ *       Generates a one-time password and emails it to the admin. Use before
+ *       `POST /auth/verify-otp`. Email delivery failures are logged but still return 200
+ *       when the OTP was stored successfully.
+ *     tags: [Admin - Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: admin@example.com
+ *     responses:
+ *       200:
+ *         description: OTP sent (or queued) to email
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: OTP sent successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     channel:
+ *                       type: string
+ *                       example: email
+ *       400:
+ *         description: Invalid email
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       404:
+ *         description: Admin account not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
  */
 const sendOTP = asyncHandler(async (req, res) => {
   try {
@@ -218,8 +362,69 @@ const sendOTP = asyncHandler(async (req, res) => {
 });
 
 /**
- * Verify OTP for admin password reset (email-only)
- * Body: { email, otp }
+ * @swagger
+ * /auth/verify-otp:
+ *   post:
+ *     summary: Verify password reset OTP
+ *     description: |
+ *       Validates the OTP sent to the admin email. On success, clears the OTP hash so
+ *       `POST /auth/reset-password` can proceed for the same email.
+ *     tags: [Admin - Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - otp
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: admin@example.com
+ *               otp:
+ *                 type: string
+ *                 description: One-time code from email
+ *                 example: "123456"
+ *     responses:
+ *       200:
+ *         description: OTP verified
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: OTP verified successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     admin:
+ *                       $ref: '#/components/schemas/AdminSafe'
+ *       400:
+ *         description: Missing fields, invalid OTP, expired OTP, or no OTP request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       404:
+ *         description: Admin account not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
  */
 const verifyOTP = asyncHandler(async (req, res) => {
   try {
@@ -262,8 +467,68 @@ const verifyOTP = asyncHandler(async (req, res) => {
 });
 
 /**
- * Reset password after OTP verification
- * Body: { email, newPassword }
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     summary: Reset admin password
+ *     description: |
+ *       Sets a new password after OTP verification (`POST /auth/verify-otp`).
+ *       Fails with `OTP_NOT_VERIFIED` if an OTP hash is still stored on the account.
+ *     tags: [Admin - Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - newPassword
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: admin@example.com
+ *               newPassword:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 6
+ *                 example: newSecret456
+ *     responses:
+ *       200:
+ *         description: Password reset successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Password reset successful
+ *                 data:
+ *                   type: object
+ *                   example: {}
+ *       400:
+ *         description: Validation error or OTP not verified
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       404:
+ *         description: Admin account not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
  */
 const resetPassword = asyncHandler(async (req, res) => {
   try {
@@ -316,8 +581,65 @@ const resetPassword = asyncHandler(async (req, res) => {
 });
 
 /**
- * Refresh access & refresh tokens
- * Body: { refreshToken }
+ * @swagger
+ * /auth/refresh:
+ *   post:
+ *     summary: Refresh JWT tokens
+ *     description: |
+ *       Issues a new access/refresh token pair when the provided refresh token is valid,
+ *       matches the value stored on the admin document, and has not expired.
+ *     tags: [Admin - Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - refreshToken
+ *             properties:
+ *               refreshToken:
+ *                 type: string
+ *                 description: Refresh token from login or previous refresh
+ *     responses:
+ *       200:
+ *         description: Tokens refreshed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Tokens refreshed successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     admin:
+ *                       $ref: '#/components/schemas/AdminSafe'
+ *                     tokens:
+ *                       $ref: '#/components/schemas/AdminTokens'
+ *       400:
+ *         description: Refresh token missing
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       401:
+ *         description: Invalid, expired, or revoked refresh token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
  */
 const refreshTokens = asyncHandler(async (req, res) => {
   try {
@@ -392,8 +714,40 @@ const refreshTokens = asyncHandler(async (req, res) => {
 });
 
 /**
- * Admin logout
- * Clears stored tokens from admin model
+ * @swagger
+ * /auth/logout:
+ *   post:
+ *     summary: Admin logout
+ *     description: |
+ *       Clears stored access/refresh tokens on the admin record when the caller is
+ *       authenticated (Bearer JWT). Returns success even without a token; token clearing
+ *       only runs when a valid admin id is present on the request.
+ *     tags: [Admin - Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Logged out successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Logged out successfully
+ *                 data:
+ *                   type: object
+ *                   example: {}
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
  */
 const logout = asyncHandler(async (req, res) => {
   try {
@@ -419,8 +773,77 @@ const logout = asyncHandler(async (req, res) => {
 });
 
 /**
- * Upload or remove admin profile picture
- * Uses multipart/form-data with field "profilePicture"
+ * @swagger
+ * /auth/upload-profile-picture:
+ *   post:
+ *     summary: Upload or remove admin profile picture
+ *     description: |
+ *       Uploads an image as the admin profile picture (optimized to WebP) or resets to the
+ *       default placeholder when `removeProfilePicture` is true and no file is sent.
+ *     tags: [Admin - Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               profilePicture:
+ *                 type: string
+ *                 format: binary
+ *                 description: Image file (required unless removing only)
+ *               removeProfilePicture:
+ *                 type: boolean
+ *                 description: Set to true to reset profile picture to the default placeholder
+ *                 example: false
+ *     responses:
+ *       200:
+ *         description: Profile picture updated or removed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Profile picture updated
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     imageBaseUrl:
+ *                       type: string
+ *                       example: http://localhost:4000/uploads/
+ *                     admin:
+ *                       $ref: '#/components/schemas/AdminSafe'
+ *       400:
+ *         description: No file provided or validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       401:
+ *         description: Authentication required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       404:
+ *         description: Admin not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ApiFailure'
  */
 const uploadProfilePicture = asyncHandler(async (req, res) => {
   try {
@@ -437,11 +860,11 @@ const uploadProfilePicture = asyncHandler(async (req, res) => {
       return failure(res, 404, 'Admin not found', 'NOT_FOUND');
     }
 
-    const previousPicture = admin.avatar;
+    const previousPicture = admin.profilePicture;
 
     // Handle remove without new file
     if (removeRequested && !req.file) {
-      if (previousPicture) {
+      if (isUploadedProfilePicture(previousPicture)) {
         await uploadService.delete(previousPicture).catch((error) => {
           logger.warn('Failed to delete previous admin profile picture', {
             error: error.message,
@@ -449,7 +872,7 @@ const uploadProfilePicture = asyncHandler(async (req, res) => {
         });
       }
 
-      admin.avatar = undefined;
+      admin.profilePicture = DEFAULT_PROFILE_PICTURE;
       await admin.save();
 
       const safeAdmin = buildSafeAdmin(admin);
@@ -465,10 +888,10 @@ const uploadProfilePicture = asyncHandler(async (req, res) => {
     });
 
     const storedPath = uploaded.path || `${PROFILE_PICTURE_FOLDER}/${uploaded.filename}`;
-    admin.avatar = storedPath;
+    admin.profilePicture = storedPath;
     await admin.save();
 
-    if (previousPicture && previousPicture !== storedPath) {
+    if (isUploadedProfilePicture(previousPicture) && previousPicture !== storedPath) {
       await uploadService.delete(previousPicture).catch((error) => {
         logger.warn('Failed to delete previous admin profile picture', {
           error: error.message,

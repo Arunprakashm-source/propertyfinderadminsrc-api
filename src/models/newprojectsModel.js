@@ -2,121 +2,140 @@ const mongoose = require('mongoose');
 const { Schema, model } = mongoose;
 
 const newProjectsSchema = new Schema({
-    // Basic Information
+
+    // ─── Core Info ────────────────────────────────────────
     projectName: {
         type: String,
         required: true,
         trim: true
     },
+    slug: {
+        type: String,
+        trim: true,
+    },
     description: {
         type: String,
         maxlength: 5000
     },
-    // Developer
+    aboutProject: {
+        type: String,
+        maxlength: 5000
+    },
+
+    // ─── Developer ────────────────────────────────────────
     developer: {
         type: Schema.Types.ObjectId,
         ref: 'Developers',
         required: true
     },
-    // Project Type
+
+    // ─── Project Classification ───────────────────────────
     projectType: {
         type: String,
         enum: ['off-plan', 'ready'],
+        required: true
+    },
+    completionStatus: {
+        type: String,
+        enum: ['off-plan', 'under-construction', 'ready'],
         default: 'off-plan'
     },
-    // Listing Type
-    listingType: {
-        type: Schema.Types.ObjectId,
-        ref: 'ListingType'
+    constructionProgress: {
+        type: Number,
+        min: 0,
+        max: 100,
+        default: 0
     },
-    // Property Details
-    propertyTypes: [{
-        type: Schema.Types.ObjectId,
-        ref: 'PropertyType'
-    }],
-    bedroomOptions: [Number], // e.g., [1, 2, 3, 4]
-    // Unit Details
-    unitDetails: [{
-        unitType: String, // e.g., "1 Bedroom Apartment"
-        propertyType: { type: Schema.Types.ObjectId, ref: 'PropertyType' },
-        bedrooms: Number,
-        bathrooms: Number,
-        area: {
-            sqm: Number,
-            sqft: Number
-        },
-        price: {
-            startingFrom: Number,
-            currency: { type: String, default: 'AED' }
-        },
-        totalUnits: Number,
-        availableUnits: Number,
-        floorPlan: String
-    }],
-    // Pricing
+
+    // ─── Pricing (cached — auto-computed from ProjectLayout) ──
     launchPrice: {
         startingFrom: Number,
         currency: { type: String, default: 'AED' }
     },
-    paymentPlan: {
-        type: { type: String }, // e.g., "10/40/50"
-        description: String,
-        breakdown: [{
-            stage: String, // e.g., "Down Payment", "During Construction"
+    governmentFees: {
+        type: Number,
+        default: 0
+    }, // percentage
+
+    // ─── Payment Plans ────────────────────────────────────
+    paymentPlans: [{
+        planName: String,  // "Option 1", "Option 2"
+        downPayment: {
+            percentage: Number,
+            amount: Number
+        },
+        duringConstruction: {
             percentage: Number,
             amount: Number,
-            dueDate: String
-        }]
+            installments: [{
+                percentage: Number,
+                date: Date,
+                amount: Number
+            }]
+        },
+        onHandover: {
+            percentage: Number,
+            amount: Number
+        }
+    }],
+    hasPostHandoverPayment: {
+        type: Boolean,
+        default: false
     },
-    hasPostHandoverPayment: { type: Boolean, default: false },
     postHandoverDetails: {
-        duration: String, // e.g., "3 years"
+        duration: String,    // e.g. "3 years"
         percentage: Number
     },
-    // Timeline
-    projectAnnouncement: Date, // Project announcement date
-    bookingOpen: Date, // Booking open date
-    constructionStarted: Date, // Construction start date
+
+    // ─── Timeline / Progress ──────────────────────────────
+    progressStatus: {
+        type: String,
+        enum: ['project-announced', 'booking-open', 'construction-started', 'finished'],
+        default: null
+    },
+    projectAnnouncement: Date,
+    bookingOpen: Date,
+    constructionStarted: Date,
     launchDate: Date,
     deliveryDate: Date,
     expectedCompletionDate: Date,
-    completionStatus: {
-        type: String,
-        enum: ['off-plan', 'ready'],
-        default: 'off-plan'
-    },
-    constructionProgress: { type: Number, min: 0, max: 100 }, // Percentage
-    // Location
+
+    // ─── Location ─────────────────────────────────────────
     location: {
+        address: String,
         city: String,
         zone: String,
-        address: String,
+        googlePlaceId: String,
         coordinates: {
-            type: { type: String, enum: ['Point'], default: 'Point' },
-            coordinates: [Number]
-        },
-        locationRef: { type: Schema.Types.ObjectId, ref: 'Location' }
+            type: { type: String, enum: ['Point'] },  // no default — only set when valid [lng, lat] provided (avoids 2dsphere "Can't extract geo keys")
+            coordinates: [Number]  // [longitude, latitude]
+        }
     },
-    // Media
+
+    // ─── Media ────────────────────────────────────────────
     images: [{
         url: String,
-        isPrimary: Boolean,
-        order: Number,
+        isPrimary: { type: Boolean, default: false },
+        order: { type: Number, default: 0 },
         caption: String,
         uploadedAt: { type: Date, default: Date.now }
     }],
+    masterPlan: [String],      // masterplan image URLs
+    brochure: String,          // PDF URL only
     virtualTour360: String,
     videoTour: String,
-    masterPlan: [String],
-    brochure: String, // PDF URL
-    projectPlan: String, // PDF URL
-    // Amenities
+
+    // ─── Amenities ────────────────────────────────────────
     amenities: [{
         type: Schema.Types.ObjectId,
         ref: 'Amenities'
     }],
-    // DLD Registration
-    isDldRegistered: { type: Boolean, default: false },
+
+    // ─── DLD Registration ─────────────────────────────────
+    isDldRegistered: {
+        type: Boolean,
+        default: false
+    },
     dldRegistrationNumber: String,
     registrationDetails: {
         permitNumber: String,
@@ -124,97 +143,91 @@ const newProjectsSchema = new Schema({
         issuedDate: Date,
         expiryDate: Date
     },
-    // Units Available
-    totalUnits: Number,
-    availableUnits: Number,
+
+    // ─── Unit Counts (cached — auto-updated from ProjectUnit) ─
+    totalUnits: { type: Number, default: 0 },
+    availableUnits: { type: Number, default: 0 },
     soldUnits: { type: Number, default: 0 },
     reservedUnits: { type: Number, default: 0 },
-    // Agent Contact
-    contactAgent: {
+
+    // ─── Cached Filters (auto-computed from ProjectBuilding/Layout) ─
+    // These are updated automatically when buildings/layouts are added
+    propertyTypes: [{
         type: Schema.Types.ObjectId,
-        ref: 'Agents'
-    },
-    contactAgency: {
-        type: Schema.Types.ObjectId,
-        ref: 'Agencies'
-    },
-    // Authorized Agencies (for developer projects)
+        ref: 'PropertyType'
+    }],
+    bedroomOptions: [Number],  // e.g. [1, 2, 3, 4]
+
+    // ─── Authorized Agencies ──────────────────────────────
+    // Populated when developer assigns agencies (triggers publish)
     authorizedAgencies: [{
         type: Schema.Types.ObjectId,
         ref: 'Agencies'
     }],
-    // Government Fees (percentage)
-    governmentFees: Number,
-    // About Project (additional description)
-    aboutProject: String,
-    // FAQs
+
+    // ─── FAQs ─────────────────────────────────────────────
     faqs: [{
-        question: {
-            type: String,
-            required: true,
-            trim: true
-        },
-        answer: {
-            type: String,
-            required: true,
-            trim: true
-        },
-        order: {
-            type: Number,
-            default: 0
-        },
-        createdAt: {
-            type: Date,
-            default: Date.now
-        },
-        updatedAt: {
-            type: Date,
-            default: Date.now
-        }
+        question: { type: String, required: true, trim: true },
+        answer: { type: String, required: true, trim: true },
+        order: { type: Number, default: 0 },
+        createdAt: { type: Date, default: Date.now },
+        updatedAt: { type: Date, default: Date.now }
     }],
-    // Features
+
+    // ─── Publish Status ───────────────────────────────────
+    publishStatus: {
+        type: String,
+        enum: ['draft', 'unpublished', 'published', 'soldout'],
+        default: 'draft'
+    },
+    publishedAt: Date,
+
+    // ─── Verification (by Admin) ──────────────────────────
+    isVerified: { type: Boolean, default: false },
+    verifiedBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
+    verifiedAt: Date,
+
+    // ─── Visibility ───────────────────────────────────────
+    isActive: { type: Boolean, default: true },
     isFeatured: { type: Boolean, default: false },
     featuredUntil: Date,
-    // Engagement
+
+    // ─── Engagement Counters ──────────────────────────────
     views: { type: Number, default: 0 },
     inquiries: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
     shares: { type: Number, default: 0 },
-    // View History
-    viewHistory: [{
-        user: { type: Schema.Types.ObjectId, ref: 'Users' },
-        viewedAt: { type: Date, default: Date.now }
-    }],
-    // SEO
-    slug: { type: String, unique: true },
+
+    // ─── SEO ──────────────────────────────────────────────
     metaTitle: String,
     metaDescription: String,
     metaKeywords: [String],
-    // Status
-    isActive: { type: Boolean, default: true },
-    isVerified: { type: Boolean, default: false },
-    verifiedBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
-    verifiedAt: Date,
-    // Timestamps
-    publishedAt: Date,
+
+    // ─── Soft Delete / Audit ──────────────────────────────
     lastModifiedAt: Date,
-    createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now }
+    lastModifiedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'Developers'
+    }
+
 }, { timestamps: true });
-// Indexes
+
+// ─── Indexes ──────────────────────────────────────────────
 newProjectsSchema.index({ 'location.coordinates': '2dsphere' });
 newProjectsSchema.index({ developer: 1, isActive: 1 });
 newProjectsSchema.index({ projectType: 1, completionStatus: 1 });
+newProjectsSchema.index({ publishStatus: 1, isActive: 1 });
 newProjectsSchema.index({ deliveryDate: 1 });
 newProjectsSchema.index({ 'launchPrice.startingFrom': 1 });
-newProjectsSchema.index({ isFeatured: 1, isActive: 1 });
-newProjectsSchema.index({ slug: 1 }, { unique: true });
+newProjectsSchema.index({ isFeatured: 1, publishStatus: 1 });
+newProjectsSchema.index({ slug: 1 }, { unique: true, sparse: true });
 newProjectsSchema.index({ publishedAt: -1 });
-// Text index for search
+newProjectsSchema.index({ developer: 1, publishStatus: 1 });
 newProjectsSchema.index({
     projectName: 'text',
     description: 'text',
-    'location.city': 'text'
+    'location.city': 'text',
+    'location.zone': 'text'
 });
 
 const Newprojects = model('Newprojects', newProjectsSchema);
