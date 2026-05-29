@@ -25,6 +25,8 @@ const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME_MS = 15 * 60 * 1000; // 15 minutes
 const PROFILE_PICTURE_FOLDER = 'admin-profile-pictures';
 const DEFAULT_PROFILE_PICTURE = 'profileless.png';
+const REMEMBER_ME_REFRESH_EXPIRE_IN =
+  process.env.JWT_REFRESH_EXPIRE_IN_REMEMBER_ME || '30d';
 
 const isUploadedProfilePicture = (path) =>
   Boolean(path) && path !== DEFAULT_PROFILE_PICTURE && !String(path).endsWith(`/${DEFAULT_PROFILE_PICTURE}`);
@@ -124,6 +126,10 @@ const resetLoginAttempts = async (admin) => {
  *                 type: string
  *                 format: password
  *                 example: secret123
+ *               rememberMe:
+ *                 type: boolean
+ *                 description: Extends refresh token expiry for persistent sessions
+ *                 example: false
  *     responses:
  *       200:
  *         description: Login successful
@@ -178,7 +184,8 @@ const resetLoginAttempts = async (admin) => {
  */
 const login = asyncHandler(async (req, res) => {
   try {
-    const { email, password } = req.body || {};
+    const { email, password, rememberMe } = req.body || {};
+    const rememberSession = toBoolean(rememberMe);
 
     if (!email || !password) {
       return failure(res, 400, 'Email and password are required', 'VALIDATION_ERROR');
@@ -199,14 +206,14 @@ const login = asyncHandler(async (req, res) => {
       return failure(res, 403, 'Admin account is disabled', 'ACCOUNT_DISABLED');
     }
 
-    if (isAccountLocked(admin)) {
-      return failure(
-        res,
-        423,
-        'Account temporarily locked due to multiple failed login attempts. Please try again later.',
-        'ACCOUNT_LOCKED'
-      );
-    }
+    // if (isAccountLocked(admin)) {
+    //   return failure(
+    //     res,
+    //     423,
+    //     'Account temporarily locked due to multiple failed login attempts. Please try again later.',
+    //     'ACCOUNT_LOCKED'
+    //   );
+    // }
 
     const isMatch = await comparePassword(password, admin.password);
     if (!isMatch) {
@@ -223,7 +230,12 @@ const login = asyncHandler(async (req, res) => {
       isSuperAdmin: admin.isSuperAdmin || false,
     };
 
-    const tokens = generateTokenPair(payload);
+    const tokens = generateTokenPair(
+      payload,
+      rememberSession
+        ? { refreshTokenExpiresIn: REMEMBER_ME_REFRESH_EXPIRE_IN }
+        : undefined
+    );
 
     // Decode tokens to get expiry dates
     let accessExpiry;

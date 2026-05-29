@@ -1,11 +1,15 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
+const Agency = require('../models/agenciesModel');
 const Developer = require('../models/developersModel');
+const Agent = require('../models/agentsModel');
 const NewProject = require('../models/newprojectsModel');
 const CountriesModel = require('../models/countriesModel');
 const ActivityLog = require('../models/activityLogModel');
 const uploadService = require('../services/uploadService');
+const { sendInvitationEmail } = require('../services/emailService');
 const {
   success,
   failure,
@@ -18,11 +22,41 @@ const { logger } = require('../utils/logger');
 
 const DEFAULT_PROFILE_PICTURE = 'profileless.png';
 const { Types } = mongoose;
+const FRONTEND_URL = process.env.EXPERTS_UI_URL || '';
+const INVITATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
 const getAdminId = (req) =>
   req.admin?.id || req.admin?._id || req.user?.id || req.user?._id;
 
 const validateObjectId = (id) => id && Types.ObjectId.isValid(id);
+const normalizeEmail = (email = '') => email.toString().toLowerCase().trim();
+
+const findExistingExpertByEmail = async (email) => {
+  const normalizedEmail = normalizeEmail(email);
+
+  const existingAgency = await Agency.findOne({ email: normalizedEmail }).select('_id');
+  if (existingAgency) return { role: 'agency', entity: existingAgency };
+
+  const existingDeveloper = await Developer.findOne({ email: normalizedEmail }).select('_id');
+  if (existingDeveloper) return { role: 'developer', entity: existingDeveloper };
+
+  const existingAgent = await Agent.findOne({ email: normalizedEmail }).select('_id');
+  if (existingAgent) return { role: 'agent', entity: existingAgent };
+
+  return null;
+};
+
+const createInviteSlug = () =>
+  `inv-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+
+const ensureUniqueDeveloperSlug = async () => {
+  let slug = createInviteSlug();
+  // Very low chance of collision, but guard for unique index certainty.
+  while (await Developer.exists({ slug })) {
+    slug = createInviteSlug();
+  }
+  return slug;
+};
 
 const parseOptionalBoolean = (value, fieldName) => {
   if (typeof value === 'undefined') return { value: undefined };
@@ -34,22 +68,36 @@ const parseOptionalBoolean = (value, fieldName) => {
   }
   return { error: `${fieldName} must be a boolean` };
 };
+const toBoolean = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return ['true', '1', 'yes', 'on'].includes(normalized);
+  }
+  return false;
+};
 
 const normalizeListSortBy = (raw) => {
   let s = String(raw || '').toLowerCase().trim().replace(/\s+/g, '-');
   if (s === 'approval-pending' || s === 'pending-approval') s = 'pending';
-  const allowed = new Set(['active', 'inactive', 'pending', 'expired', 'invited', 'featured']);
+  if (s === 'approval-declined') s = 'declined';
+  if (s === 'invitation-expired') s = 'expired';
+  const allowed = new Set(['active', 'inactive', 'pending', 'expired', 'declined', 'invited', 'featured']);
   return allowed.has(s) ? s : null;
 };
 
-const getDisplayImage = (developer) =>
-  developer?.profilePicture || developer?.logo || DEFAULT_PROFILE_PICTURE;
+const getDisplayImage = (developer) => {
+  const fromPicture = uploadService.toStoredProfileFilename(developer?.profilePicture);
+  const fromLogo = uploadService.toStoredProfileFilename(developer?.logo);
+  return fromPicture || fromLogo || DEFAULT_PROFILE_PICTURE;
+};
 
 const buildSafeDeveloper = (developer) => {
   const safe = sanitizeDeveloper(developer);
   const displayImage = getDisplayImage(developer);
-  safe.profilePicture = displayImage === DEFAULT_PROFILE_PICTURE ? DEFAULT_PROFILE_PICTURE : displayImage;
-  safe.logo = developer.logo || safe.profilePicture;
+  safe.profilePicture = displayImage;
+  safe.logo = uploadService.toStoredProfileFilename(developer?.logo) || displayImage;
   return safe;
 };
 
@@ -57,6 +105,8 @@ const resolveDeveloperImagePath = (filename) => {
   if (!filename || filename === DEFAULT_PROFILE_PICTURE) return null;
   return filename.includes('/') ? filename : `img/developer/${filename}`;
 };
+const isDefaultProfilePicture = (value) =>
+  !value || String(value).trim().toLowerCase().includes('profileless.png');
 
 const runWithTimeout = (promise, timeoutMs = 2500) =>
   Promise.race([
@@ -66,15 +116,71 @@ const runWithTimeout = (promise, timeoutMs = 2500) =>
     }),
   ]);
 
+const sendDeveloperInvitation = asyncHandler(async (req, res) => {
+  try {
+    const { email, name } = req.body || {};
+
+    if (!email || !isEmail(email)) {
+      return failure(res, 400, 'Valid email is required', 'VALIDATION_ERROR');
+    }
+
+    const existingExpert = await findExistingExpertByEmail(email);
+    if (existingExpert) {
+      return failure(res, 409, `Email already used by ${existingExpert.role}`, 'CONFLICT');
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_MS);
+    const invitationLink = `${FRONTEND_URL}/developer/accept-invitation?token=${token}`;
+    const inviteSlug = await ensureUniqueDeveloperSlug();
+    const normalizedName = String(name || '').trim() || 'Invited Developer';
+
+    const developer = await Developer.create({
+      email: normalizedEmail,
+      name: normalizedName,
+      slug: inviteSlug,
+      invitationToken: token,
+      invitationStatus: 'pending',
+      invitationSentAt: new Date(),
+      invitationExpiry: expiresAt,
+      isActive: true,
+      isVerified: false,
+    });
+
+    try {
+      await sendInvitationEmail(
+        normalizedEmail,
+        normalizedName,
+        invitationLink,
+        'Admin Team',
+        'Developer Partner'
+      );
+    } catch (emailError) {
+      logger.warn('Failed to send developer invitation email', { error: emailError.message });
+    }
+
+    return success(res, 'Invitation sent successfully', {
+      email: developer.email,
+      invitationToken: token,
+      expiresAt,
+    });
+  } catch (error) {
+    logger.error('Send developer invitation failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to send invitation', 'SERVER_ERROR');
+  }
+});
+
 const mapDeveloperListItem = (developer) => {
   const image = getDisplayImage(developer);
+  const logo = uploadService.toStoredProfileFilename(developer.logo) || image;
   return {
     _id: developer._id,
     name: developer.name,
     email: developer.email,
     phoneNumber: developer.phoneNumber,
     profilePicture: image,
-    logo: developer.logo || image,
+    logo,
     profilePictureUrl: uploadService.getDeveloperProfileImageUrl(image),
     isActive: developer.isActive,
     isVerified: developer.isVerified,
@@ -117,12 +223,12 @@ const mapDeveloperListItem = (developer) => {
  *         name: invitationStatus
  *         schema:
  *           type: string
- *           enum: [pending, accepted, expired]
+ *           enum: [pending, accepted, expired, declined]
  *       - in: query
  *         name: sortBy
  *         schema:
  *           type: string
- *           enum: [active, inactive, pending, expired, invited, featured]
+ *           enum: [active, inactive, pending, expired, declined, invited, featured]
  *       - in: query
  *         name: registrationDate
  *         schema:
@@ -190,7 +296,7 @@ const listDevelopers = asyncHandler(async (req, res) => {
       filter.isFeatured = isFeatured === true || isFeatured === 'true';
     }
     if (invitationStatus) {
-      const allowed = ['pending', 'accepted', 'expired'];
+      const allowed = ['pending', 'accepted', 'expired', 'declined'];
       const status = String(invitationStatus).toLowerCase();
       if (!allowed.includes(status)) {
         return failure(res, 400, 'Invalid invitationStatus');
@@ -210,6 +316,8 @@ const listDevelopers = asyncHandler(async (req, res) => {
       filter.isVerified = false;
     } else if (sortBy === 'expired') {
       filter.invitationStatus = 'expired';
+    } else if (sortBy === 'declined') {
+      filter.invitationStatus = 'declined';
     } else if (sortBy === 'invited') {
       filter.invitationStatus = 'pending';
     } else if (sortBy === 'featured') {
@@ -548,11 +656,17 @@ const updateDeveloper = asyncHandler(async (req, res) => {
       updatesApplied = true;
     }
     if (logo !== undefined) {
-      developer.logo = logo;
+      const normalizedLogo = logo
+        ? uploadService.toStoredProfileFilename(logo) || String(logo).trim()
+        : undefined;
+      developer.logo = normalizedLogo || undefined;
       updatesApplied = true;
     }
     if (profilePicture !== undefined) {
-      developer.profilePicture = profilePicture;
+      const normalizedPicture = profilePicture
+        ? uploadService.toStoredProfileFilename(profilePicture) || String(profilePicture).trim()
+        : undefined;
+      developer.profilePicture = normalizedPicture || undefined;
       updatesApplied = true;
     }
 
@@ -717,7 +831,7 @@ const verifyDeveloper = asyncHandler(async (req, res) => {
       developer.isActive = false;
       developer.isVerified = false;
       developer.isFeatured = false;
-      developer.invitationStatus = 'expired';
+      developer.invitationStatus = 'declined';
       developer.invitationToken = undefined;
     }
 
@@ -852,10 +966,99 @@ const deleteDeveloper = asyncHandler(async (req, res) => {
   }
 });
 
+const updateDeveloperProfilePicture = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const removeRequested = toBoolean(req.body?.removeProfilePicture);
+
+    if (!id || !validateObjectId(id)) {
+      return failure(res, 400, 'Invalid developer ID format');
+    }
+
+    const developer = await Developer.findById(id);
+    if (!developer) {
+      return failure(res, 404, 'Developer not found', 'NOT_FOUND');
+    }
+
+    const previousPicture = developer.profilePicture || developer.logo;
+
+    if (removeRequested && !req.file) {
+      if (!isDefaultProfilePicture(previousPicture)) {
+        const previousPicturePath = previousPicture.includes('/')
+          ? previousPicture
+          : `img/developer/${previousPicture}`;
+        await uploadService.delete(previousPicturePath).catch((error) => {
+          logger.warn('Failed to delete previous developer profile picture', { error: error.message });
+        });
+      }
+
+      developer.profilePicture = DEFAULT_PROFILE_PICTURE;
+      developer.logo = DEFAULT_PROFILE_PICTURE;
+      await developer.save();
+
+      const safeDeveloper = buildSafeDeveloper(developer);
+      safeDeveloper.profilePictureUrl = uploadService.getDeveloperProfileImageUrl(
+        getDisplayImage(developer)
+      );
+      return success(res, 'Profile picture removed', { developer: safeDeveloper }, 200);
+    }
+
+    if (!req.file) {
+      return failure(res, 400, 'No profile picture provided');
+    }
+
+    const uploaded = await uploadService.upload(req.file, 'developer', {
+      generateThumbnail: false,
+    });
+
+    const storedFilename =
+      uploadService.toStoredProfileFilename(uploaded.filename) ||
+      uploadService.toStoredProfileFilename(uploaded.path);
+    if (!storedFilename) {
+      return failure(res, 500, 'Failed to resolve uploaded filename', 'SERVER_ERROR');
+    }
+
+    // Save only the filename in the database (same as main API developer profile-picture upload).
+    developer.profilePicture = storedFilename;
+    developer.logo = storedFilename;
+    await developer.save();
+
+    if (
+      previousPicture &&
+      uploadService.toStoredProfileFilename(previousPicture) !== storedFilename &&
+      !isDefaultProfilePicture(previousPicture)
+    ) {
+      const previousPicturePath = previousPicture.includes('/')
+        ? previousPicture
+        : `img/developer/${previousPicture}`;
+      await uploadService.delete(previousPicturePath).catch((error) => {
+        logger.warn('Failed to delete previous developer profile picture', { error: error.message });
+      });
+    }
+
+    const safeDeveloper = buildSafeDeveloper(developer);
+    safeDeveloper.profilePictureUrl = uploadService.getDeveloperProfileImageUrl(
+      getDisplayImage(developer)
+    );
+    const responseData = uploadService.buildStandardResponse(
+      uploaded,
+      { images: 'developer' },
+      { developer: safeDeveloper }
+    );
+
+    return success(res, 'Profile picture updated', responseData, 200);
+  } catch (error) {
+    logger.error('Update developer profile picture failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to update profile picture', 'SERVER_ERROR', error.message);
+  }
+});
+
 module.exports = {
+  sendDeveloperInvitation,
   listDevelopers,
   getDeveloperDetails,
   updateDeveloper,
+  updateDeveloperProfilePicture,
   verifyDeveloper,
   deleteDeveloper,
 };

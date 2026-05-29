@@ -1,11 +1,14 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const Agency = require('../models/agenciesModel');
+const Developer = require('../models/developersModel');
 const Agent = require('../models/agentsModel');
 const CountriesModel = require('../models/countriesModel');
 const ActivityLog = require('../models/activityLogModel');
 const uploadService = require('../services/uploadService');
+const { sendInvitationEmail } = require('../services/emailService');
 const {
   success,
   failure,
@@ -18,11 +21,29 @@ const { logger } = require('../utils/logger');
 
 const DEFAULT_PROFILE_PICTURE = 'profileless.png';
 const { Types } = mongoose;
+const FRONTEND_URL = process.env.EXPERTS_UI_URL || '';
+const INVITATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
 const getAdminId = (req) =>
   req.admin?.id || req.admin?._id || req.user?.id || req.user?._id;
 
 const validateObjectId = (id) => id && Types.ObjectId.isValid(id);
+const normalizeEmail = (email = '') => email.toString().toLowerCase().trim();
+
+const findExistingExpertByEmail = async (email) => {
+  const normalizedEmail = normalizeEmail(email);
+
+  const existingAgency = await Agency.findOne({ email: normalizedEmail }).select('_id');
+  if (existingAgency) return { role: 'agency', entity: existingAgency };
+
+  const existingDeveloper = await Developer.findOne({ email: normalizedEmail }).select('_id');
+  if (existingDeveloper) return { role: 'developer', entity: existingDeveloper };
+
+  const existingAgent = await Agent.findOne({ email: normalizedEmail }).select('_id');
+  if (existingAgent) return { role: 'agent', entity: existingAgent };
+
+  return null;
+};
 
 const parseOptionalBoolean = (value, fieldName) => {
   if (typeof value === 'undefined') return { value: undefined };
@@ -34,11 +55,22 @@ const parseOptionalBoolean = (value, fieldName) => {
   }
   return { error: `${fieldName} must be a boolean` };
 };
+const toBoolean = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return ['true', '1', 'yes', 'on'].includes(normalized);
+  }
+  return false;
+};
 
 const normalizeListSortBy = (raw) => {
   let s = String(raw || '').toLowerCase().trim().replace(/\s+/g, '-');
   if (s === 'approval-pending' || s === 'pending-approval') s = 'pending';
-  const allowed = new Set(['active', 'inactive', 'pending', 'expired', 'invited']);
+  if (s === 'approval-declined') s = 'declined';
+  if (s === 'invitation-expired') s = 'expired';
+  const allowed = new Set(['active', 'inactive', 'pending', 'expired', 'declined', 'invited']);
   return allowed.has(s) ? s : null;
 };
 
@@ -47,9 +79,8 @@ const buildSafeAgency = (agency) => {
   delete safe.passwordResetOTPHash;
   delete safe.passwordResetOTPExpires;
   delete safe.passwordResetEligibleUntil;
-  if (!safe.profilePicture) {
-    safe.profilePicture = DEFAULT_PROFILE_PICTURE;
-  }
+  const storedPicture = uploadService.toStoredProfileFilename(safe.profilePicture);
+  safe.profilePicture = storedPicture || DEFAULT_PROFILE_PICTURE;
   return safe;
 };
 
@@ -57,6 +88,8 @@ const resolveAgencyProfilePicturePath = (profilePicture) => {
   if (!profilePicture || profilePicture === DEFAULT_PROFILE_PICTURE) return null;
   return profilePicture.includes('/') ? profilePicture : `img/agency/${profilePicture}`;
 };
+const isDefaultProfilePicture = (value) =>
+  !value || String(value).trim().toLowerCase().includes('profileless.png');
 
 const runWithTimeout = (promise, timeoutMs = 2500) =>
   Promise.race([
@@ -66,22 +99,108 @@ const runWithTimeout = (promise, timeoutMs = 2500) =>
     }),
   ]);
 
-const mapAgencyListItem = (agency) => ({
-  _id: agency._id,
-  agencyName: agency.agencyName,
-  email: agency.email,
-  phoneNumber: agency.phoneNumber,
-  orn: agency.orn,
-  profilePicture: agency.profilePicture || DEFAULT_PROFILE_PICTURE,
-  profilePictureUrl: uploadService.getAgencyProfileImageUrl(agency.profilePicture),
-  isActive: agency.isActive,
-  isVerified: agency.isVerified,
-  invitationStatus: agency.invitationStatus,
-  subscriptionActive: agency.subscription?.isActive ?? false,
-  agentCount: agency.agentCount ?? 0,
-  nationality: agency.nationality,
-  createdAt: agency.createdAt,
-  lastLogin: agency.lastLogin,
+const mapAgencyListItem = (agency) => {
+  const profilePicture =
+    uploadService.toStoredProfileFilename(agency.profilePicture) || DEFAULT_PROFILE_PICTURE;
+  return {
+    _id: agency._id,
+    agencyName: agency.agencyName,
+    email: agency.email,
+    phoneNumber: agency.phoneNumber,
+    orn: agency.orn,
+    profilePicture,
+    profilePictureUrl: uploadService.getAgencyProfileImageUrl(profilePicture),
+    isActive: agency.isActive,
+    isVerified: agency.isVerified,
+    invitationStatus: agency.invitationStatus,
+    subscriptionActive: agency.subscription?.isActive ?? false,
+    agentCount: agency.agentCount ?? 0,
+    nationality: agency.nationality,
+    createdAt: agency.createdAt,
+    lastLogin: agency.lastLogin,
+  };
+};
+
+/**
+ * @swagger
+ * /agency/invite-agency:
+ *   post:
+ *     summary: Send agency invitation (admin)
+ *     tags: [Admin - Agency Management]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               agencyName:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Invitation sent successfully
+ *       400:
+ *         description: Validation error
+ *       409:
+ *         description: Email already in use
+ */
+const sendAgencyInvitation = asyncHandler(async (req, res) => {
+  try {
+    const { email, agencyName } = req.body || {};
+
+    if (!email || !isEmail(email)) {
+      return failure(res, 400, 'Valid email is required', 'VALIDATION_ERROR');
+    }
+
+    const existingExpert = await findExistingExpertByEmail(email);
+    if (existingExpert) {
+      return failure(res, 409, `Email already used by ${existingExpert.role}`, 'CONFLICT');
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_MS);
+    const invitationLink = `${FRONTEND_URL}/agency/accept-invitation?token=${token}`;
+    const normalizedAgencyName = String(agencyName || '').trim() || 'Invited Agency';
+
+    const agency = await Agency.create({
+      email: normalizedEmail,
+      agencyName: normalizedAgencyName,
+      invitationToken: token,
+      invitationStatus: 'pending',
+      invitationSentAt: new Date(),
+      invitationExpiry: expiresAt,
+      isActive: true,
+      isVerified: false,
+    });
+
+    try {
+      await sendInvitationEmail(
+        normalizedEmail,
+        normalizedAgencyName,
+        invitationLink,
+        'Admin Team',
+        'Agency Partner'
+      );
+    } catch (emailError) {
+      logger.warn('Failed to send agency invitation email', { error: emailError.message });
+    }
+
+    return success(res, 'Invitation sent successfully', {
+      email: agency.email,
+      invitationToken: token,
+      expiresAt,
+    });
+  } catch (error) {
+    logger.error('Send agency invitation failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to send invitation', 'SERVER_ERROR');
+  }
 });
 
 /**
@@ -109,7 +228,7 @@ const mapAgencyListItem = (agency) => ({
  *         name: invitationStatus
  *         schema:
  *           type: string
- *           enum: [pending, accepted, expired]
+ *           enum: [pending, accepted, expired, declined]
  *       - in: query
  *         name: subscriptionActive
  *         schema:
@@ -118,7 +237,7 @@ const mapAgencyListItem = (agency) => ({
  *         name: sortBy
  *         schema:
  *           type: string
- *           enum: [active, inactive, pending, expired, invited]
+ *           enum: [active, inactive, pending, expired, declined, invited]
  *       - in: query
  *         name: registrationDate
  *         schema:
@@ -183,7 +302,7 @@ const listAgencies = asyncHandler(async (req, res) => {
       filter.isVerified = isVerified === true || isVerified === 'true';
     }
     if (invitationStatus) {
-      const allowed = ['pending', 'accepted', 'expired'];
+      const allowed = ['pending', 'accepted', 'expired', 'declined'];
       const status = String(invitationStatus).toLowerCase();
       if (!allowed.includes(status)) {
         return failure(res, 400, 'Invalid invitationStatus');
@@ -206,6 +325,8 @@ const listAgencies = asyncHandler(async (req, res) => {
       filter.isVerified = false;
     } else if (sortBy === 'expired') {
       filter.invitationStatus = 'expired';
+    } else if (sortBy === 'declined') {
+      filter.invitationStatus = 'declined';
     } else if (sortBy === 'invited') {
       filter.invitationStatus = 'pending';
     }
@@ -687,7 +808,7 @@ const verifyAgency = asyncHandler(async (req, res) => {
       }
       agency.isActive = false;
       agency.isVerified = false;
-      agency.invitationStatus = 'expired';
+      agency.invitationStatus = 'declined';
       agency.invitationToken = undefined;
       if (reason && String(reason).trim()) {
         agency.deactivationReason = String(reason).trim().slice(0, 500);
@@ -810,10 +931,92 @@ const deleteAgency = asyncHandler(async (req, res) => {
   }
 });
 
+const updateAgencyProfilePicture = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const removeRequested = toBoolean(req.body?.removeProfilePicture);
+
+    if (!id || !validateObjectId(id)) {
+      return failure(res, 400, 'Invalid agency ID format');
+    }
+
+    const agency = await Agency.findById(id);
+    if (!agency) {
+      return failure(res, 404, 'Agency not found', 'NOT_FOUND');
+    }
+
+    const previousPicture = agency.profilePicture;
+
+    if (removeRequested && !req.file) {
+      if (!isDefaultProfilePicture(previousPicture)) {
+        const previousPicturePath = previousPicture.includes('/')
+          ? previousPicture
+          : `img/agency/${previousPicture}`;
+        await uploadService.delete(previousPicturePath).catch((error) => {
+          logger.warn('Failed to delete previous agency profile picture', { error: error.message });
+        });
+      }
+
+      agency.profilePicture = DEFAULT_PROFILE_PICTURE;
+      await agency.save();
+
+      const safeAgency = buildSafeAgency(agency);
+      safeAgency.profilePictureUrl = uploadService.getAgencyProfileImageUrl(agency.profilePicture);
+      return success(res, 'Profile picture removed', { agency: safeAgency }, 200);
+    }
+
+    if (!req.file) {
+      return failure(res, 400, 'No profile picture provided');
+    }
+
+    const uploaded = await uploadService.upload(req.file, 'agency', {
+      generateThumbnail: false,
+    });
+
+    const storedFilename =
+      uploadService.toStoredProfileFilename(uploaded.filename) ||
+      uploadService.toStoredProfileFilename(uploaded.path);
+    if (!storedFilename) {
+      return failure(res, 500, 'Failed to resolve uploaded filename', 'SERVER_ERROR');
+    }
+
+    // Save only the filename in the database (same as main API agency profile-picture upload).
+    agency.profilePicture = storedFilename;
+    await agency.save();
+
+    if (
+      previousPicture &&
+      uploadService.toStoredProfileFilename(previousPicture) !== storedFilename &&
+      !isDefaultProfilePicture(previousPicture)
+    ) {
+      const previousPicturePath = previousPicture.includes('/')
+        ? previousPicture
+        : `img/agency/${previousPicture}`;
+      await uploadService.delete(previousPicturePath).catch((error) => {
+        logger.warn('Failed to delete previous agency profile picture', { error: error.message });
+      });
+    }
+
+    const safeAgency = buildSafeAgency(agency);
+    safeAgency.profilePictureUrl = uploadService.getAgencyProfileImageUrl(agency.profilePicture);
+    const responseData = uploadService.buildStandardResponse(
+      uploaded,
+      { images: 'agency' },
+      { agency: safeAgency }
+    );
+    return success(res, 'Profile picture updated', responseData, 200);
+  } catch (error) {
+    logger.error('Update agency profile picture failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to update profile picture', 'SERVER_ERROR', error.message);
+  }
+});
+
 module.exports = {
+  sendAgencyInvitation,
   listAgencies,
   getAgencyDetails,
   updateAgency,
+  updateAgencyProfilePicture,
   verifyAgency,
   deleteAgency,
 };

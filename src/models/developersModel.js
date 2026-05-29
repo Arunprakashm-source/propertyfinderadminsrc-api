@@ -60,7 +60,7 @@ const developersSchema = new Schema({
     phoneVerificationExpires: Date,
     invitationStatus: {
         type: String,
-        enum: ['pending', 'accepted', 'expired'],
+        enum: ['pending', 'accepted', 'expired', 'declined'],
         default: 'pending'
     },
     invitationToken: String,

@@ -184,7 +184,7 @@ const agenciesSchema = new Schema({
     // Invitation Status (from Admin)
     invitationStatus: {
         type: String,
-        enum: ['pending', 'accepted', 'expired'],
+        enum: ['pending', 'accepted', 'expired', 'declined'],
         default: 'pending'
     },
     invitationToken: String,

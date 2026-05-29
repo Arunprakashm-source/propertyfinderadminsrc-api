@@ -28,8 +28,8 @@ const MIME_TYPES = {
 };
 
 const MAX_FILE_SIZES = {
-  image: Number(process.env.MAX_IMAGE_SIZE_BYTES || 5 * 1024 * 1024),
-  document: Number(process.env.MAX_DOCUMENT_SIZE_BYTES || 10 * 1024 * 1024),
+  image: Number(process.env.MAX_IMAGE_SIZE_BYTES || 25 * 1024 * 1024),
+  document: Number(process.env.MAX_DOCUMENT_SIZE_BYTES || 50 * 1024 * 1024),
   video: Number(process.env.MAX_VIDEO_SIZE_BYTES || 1024 * 1024 * 1024), // 1GB default
 };
 

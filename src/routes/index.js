@@ -19,7 +19,7 @@ router.use('/users', usersRoutes);
 
 router.use('/agents', agentsRoutes);
 
-router.use('/agencies', agenciesRoutes);
+router.use('/agency', agenciesRoutes);
 
 router.use('/developers', developersRoutes);
 

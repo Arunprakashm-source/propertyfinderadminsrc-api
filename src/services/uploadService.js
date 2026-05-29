@@ -4,8 +4,13 @@ const fs = require('fs-extra');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
-const MAX_FILE_SIZE = Number(process.env.MAX_UPLOAD_SIZE_BYTES || 5 * 1024 * 1024);
+const MAX_FILE_SIZE = Number(
+  process.env.MAX_IMAGE_SIZE_BYTES ||
+    process.env.MAX_UPLOAD_SIZE_BYTES ||
+    25 * 1024 * 1024
+);
 const MAX_VIDEO_SIZE = Number(process.env.MAX_VIDEO_SIZE_BYTES || 1024 * 1024 * 1024); // 1GB default
+const MAX_DOCUMENT_SIZE = Number(process.env.MAX_DOCUMENT_SIZE_BYTES || 50 * 1024 * 1024); // 50MB default
 const LOCAL_UPLOAD_PATH = process.env.LOCAL_UPLOAD_PATH || path.join(process.cwd(), 'uploads');
 const PUBLIC_BASE_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '') || 'http://localhost:5000';
 const UPLOADS_BASE_URL = `${PUBLIC_BASE_URL}/uploads`;
@@ -147,10 +152,14 @@ class LocalStorageStrategy extends UploadStrategy {
         : 'File type not allowed. Only images are supported.';
       throw new Error(msg);
     }
-    const maxSize = allowVideo && isVideo(file.mimetype) ? MAX_VIDEO_SIZE : MAX_FILE_SIZE;
+    let maxSize = MAX_FILE_SIZE;
+    if (allowVideo && isVideo(file.mimetype)) {
+      maxSize = MAX_VIDEO_SIZE;
+    }
     if (file.size > maxSize) {
       const sizeMB = Math.round(maxSize / (1024 * 1024));
-      throw new Error(`File exceeds maximum size of ${sizeMB}MB`);
+      const fileLabel = allowVideo && isVideo(file.mimetype) ? 'Video' : 'Image';
+      throw new Error(`${fileLabel} exceeds maximum size of ${sizeMB}MB`);
     }
   }
 
@@ -313,12 +322,17 @@ class S3StorageStrategy extends UploadStrategy {
     if (isVideo(file.mimetype)) {
       maxSize = MAX_VIDEO_SIZE;
     } else if (isDocument(file.mimetype)) {
-      maxSize = Number(process.env.MAX_DOCUMENT_SIZE_BYTES || 10 * 1024 * 1024); // 10MB default
+      maxSize = MAX_DOCUMENT_SIZE;
     }
-    
+
     if (file.size > maxSize) {
       const sizeMB = Math.round(maxSize / (1024 * 1024));
-      throw new Error(`File exceeds maximum size of ${sizeMB}MB`);
+      const fileLabel = isVideo(file.mimetype)
+        ? 'Video'
+        : isDocument(file.mimetype)
+          ? 'Document'
+          : 'Image';
+      throw new Error(`${fileLabel} exceeds maximum size of ${sizeMB}MB`);
     }
   }
 
@@ -329,7 +343,7 @@ class S3StorageStrategy extends UploadStrategy {
     const buffer = await getFileBuffer(file);
     const isVideoFile = isVideo(file.mimetype);
     const isDocumentFile = isDocument(file.mimetype);
-    
+
     // Build folder path: {type}/{entity}
     const fileType = getFileTypeKeyword(file.mimetype);
     const folder = buildFolderPath(fileType, entity);
@@ -613,9 +627,18 @@ if (!uploadService.uploadsBaseUrl) {
   uploadService.uploadsBaseUrl = UPLOADS_BASE_URL;
 }
 
+/** DB should store basename only (e.g. `abc.webp`), not `img/agency/abc.webp`. */
+uploadService.toStoredProfileFilename = (value) => {
+  if (value == null) return null;
+  const trimmed = String(value).trim().replace(/^\/+/, '').replace(/\\/g, '/');
+  if (!trimmed || trimmed.toLowerCase().includes('profileless.png')) return null;
+  const basename = trimmed.split('/').pop();
+  return basename && basename.length > 0 ? basename : null;
+};
+
 const buildProfileImageUrl = (folder, filename) => {
   if (!filename || typeof filename !== 'string') return null;
-  const name = String(filename).trim().replace(/^\/+/, '').replace(/^.*\//, '');
+  const name = uploadService.toStoredProfileFilename(filename);
   if (!name || name === 'profileless.png') return null;
   const isLocal = (process.env.UPLOAD_STORAGE || '').toLowerCase() === 'local';
   if (isLocal) {

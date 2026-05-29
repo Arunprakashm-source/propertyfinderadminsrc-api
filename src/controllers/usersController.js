@@ -34,6 +34,12 @@ const runWithTimeout = (promise, timeoutMs = 2500) =>
     }),
   ]);
 
+const normalizeUsersSortBy = (raw) => {
+  const value = String(raw || '').toLowerCase().trim().replace(/\s+/g, '-');
+  const allowed = new Set(['all', 'active', 'inactive', 'banned']);
+  return allowed.has(value) ? value : null;
+};
+
 const cleanupDeletedUser = async ({ user, profilePath, adminId, deletedSnapshot, req }) => {
   if (profilePath) {
     await runWithTimeout(uploadService.delete(profilePath), 2500).catch((error) => {
@@ -91,6 +97,9 @@ const parseOptionalBoolean = (value, fieldName) => {
   }
   return { error: `${fieldName} must be a boolean` };
 };
+
+const isDefaultProfilePicture = (value) =>
+  !value || String(value).trim().toLowerCase() === DEFAULT_PROFILE_PICTURE;
 
 const normalizePreferences = (preferences) => {
   if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) {
@@ -218,6 +227,12 @@ const pickStatusAfter = (user) => ({
  *           default: 20
  *           maximum: 100
  *         description: Items per page
+ *       - in: query
+ *         name: sortBy
+ *         schema:
+ *           type: string
+ *           enum: [all, active, inactive, banned]
+ *         description: Quick status filter shortcut (active/inactive/banned)
  *     responses:
  *       200:
  *         description: Users fetched successfully
@@ -238,6 +253,7 @@ const listUsers = asyncHandler(async (req, res) => {
       registrationDate,
       page = 1,
       limit = 20,
+      sortBy: sortByRaw,
     } = req.query;
 
     // Minimal validation
@@ -258,6 +274,7 @@ const listUsers = asyncHandler(async (req, res) => {
 
     // Build query
     const query = {};
+    const sortBy = normalizeUsersSortBy(sortByRaw);
 
     // Search filter (case-insensitive regex across firstName, lastName, email, phoneNumber)
     if (search) {
@@ -276,6 +293,17 @@ const listUsers = asyncHandler(async (req, res) => {
     }
     if (typeof isBanned !== 'undefined') {
       query.isBanned = isBanned === true || isBanned === 'true';
+    }
+    if (sortByRaw && !sortBy) {
+      return failure(res, 400, 'Invalid sortBy. Allowed: all, active, inactive, banned');
+    }
+    if (sortBy === 'active') {
+      query.isActive = true;
+      query.isBanned = false;
+    } else if (sortBy === 'inactive') {
+      query.isActive = false;
+    } else if (sortBy === 'banned') {
+      query.isBanned = true;
     }
 
     // Country filter
@@ -1130,10 +1158,88 @@ const getUserActivityLog = asyncHandler(async (req, res) => {
   }
 });
 
+const updateUserProfilePicture = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const removeRequested = toBoolean(req.body?.removeProfilePicture);
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid user ID format');
+    }
+
+    const user = await UsersModel.findById(id);
+    if (!user) {
+      return failure(res, 404, 'User not found');
+    }
+
+    const previousPicture = user.profilePicture;
+
+    if (removeRequested && !req.file) {
+      if (!isDefaultProfilePicture(previousPicture)) {
+        const previousPicturePath = previousPicture.includes('/')
+          ? previousPicture
+          : `img/user/${previousPicture}`;
+
+        await uploadService.delete(previousPicturePath).catch((error) => {
+          logger.warn('Failed to delete previous profile picture', { error: error.message });
+        });
+      }
+
+      user.profilePicture = DEFAULT_PROFILE_PICTURE;
+      await user.save();
+
+      const safeUser = buildSafeUser(user);
+      safeUser.profilePictureUrl = uploadService.getUserProfileImageUrl(user.profilePicture);
+
+      return success(res, 'Profile picture removed', { user: safeUser }, 200);
+    }
+
+    if (!req.file) {
+      return failure(res, 400, 'No profile picture provided');
+    }
+
+    const uploaded = await uploadService.upload(req.file, 'user', {
+      generateThumbnail: false,
+    });
+
+    user.profilePicture = uploaded.filename;
+    await user.save();
+
+    if (
+      previousPicture &&
+      previousPicture !== uploaded.filename &&
+      !isDefaultProfilePicture(previousPicture)
+    ) {
+      const previousPicturePath = previousPicture.includes('/')
+        ? previousPicture
+        : `img/user/${previousPicture}`;
+
+      await uploadService.delete(previousPicturePath).catch((error) => {
+        logger.warn('Failed to delete previous profile picture', { error: error.message });
+      });
+    }
+
+    const safeUser = buildSafeUser(user);
+    safeUser.profilePictureUrl = uploadService.getUserProfileImageUrl(user.profilePicture);
+
+    const responseData = uploadService.buildStandardResponse(
+      uploaded,
+      { images: 'user' },
+      { user: safeUser }
+    );
+
+    return success(res, 'Profile picture updated', responseData, 200);
+  } catch (error) {
+    logger.error('Update user profile picture failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to update profile picture', 'ERROR', error.message);
+  }
+});
+
 module.exports = {
   listUsers,
   getUserDetails,
   updateUser,
+  updateUserProfilePicture,
   deleteUser,
   getUserActivityLog,
 };
