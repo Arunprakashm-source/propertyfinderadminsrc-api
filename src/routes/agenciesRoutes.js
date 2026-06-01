@@ -5,6 +5,7 @@ const AgenciesController = require('../controllers/agenciesController');
 const { uploadSingleImage } = require('../config/multer');
 
 router.post('/invite-agency', authenticateAdmin, AgenciesController.sendAgencyInvitation);
+router.get('/list', authenticateAdmin, AgenciesController.listAgenciesForDropdown);
 router.get('/', authenticateAdmin, AgenciesController.listAgencies);
 router.post('/:id/verify', authenticateAdmin, AgenciesController.verifyAgency);
 router.get('/:id', authenticateAdmin, AgenciesController.getAgencyDetails);

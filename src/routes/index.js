@@ -8,6 +8,7 @@ const amenitiesRoutes = require('./amenitiesRoutes');
 const agentsRoutes = require('./agentsRoutes');
 const agenciesRoutes = require('./agenciesRoutes');
 const developersRoutes = require('./developersRoutes');
+const propertiesRoutes = require('./propertiesRoutes');
 
 // Auth routes 
 router.use('/auth', authRoutes);
@@ -25,6 +26,8 @@ router.use('/developers', developersRoutes);
 
 // Amenities management routes
 router.use('/amenities', amenitiesRoutes);
+
+router.use('/properties', propertiesRoutes);
 
 
 

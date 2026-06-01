@@ -1,9 +1,12 @@
 const asyncHandler = require('express-async-handler');
 
 const Countries = require('../models/countriesModel');
+const ListingSearchCity = require('../models/listingSearchCityModel');
 const Amenities = require('../models/amenitiesModel');
 const PropertyType = require('../models/propertyTypeModel');
 const ListingType = require('../models/listingTypeModel');
+const JobTitles = require('../models/jobTitlesModel');
+const { AGENT_TYPE_OPTIONS, AGENT_EXPERIENCE_OPTIONS } = require('../utils/constants');
 const { success, failure } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
 
@@ -11,33 +14,49 @@ const { logger } = require('../utils/logger');
  * @swagger
  * /master-data:
  *   get:
- *     summary: Get admin master data
+ *     summary: Get admin master data lists
+ *     description: |
+ *       Returns one or more master-data collections used by the admin UI.
+ *
+ *       Request a single type via `type`, or multiple via `types` (comma-separated).
+ *       The response `data` object includes only the keys you requested.
+ *
+ *       **Supported values:**
+ *       - countries — active countries (displayOrder, name)
+ *       - amenities — active amenities
+ *       - propertytypes — active property types (response key `propertyTypes`)
+ *       - listingtypes — active listing types (response key `listingTypes`)
+ *       - agenttypes — agent / superagent dropdown options (response key `agentTypes`, `{ name, value }`)
+ *       - jobtitles — active job titles for agent specialization (response key `jobTitles`)
+ *       - agentexperience — years of experience dropdown options (response key `agentExperience`, `{ name, value }`)
+ *       - supportedurls — CloudFront base URLs for img/vid/doc per entity (response key `supportedUrls`: projectUrl, propertyUrl, agentUrl, agencyUrl, developerUrl, userUrl, amenityUrl, awardUrl)
+ *       - propertylocations — cities with property listings (response key `propertyLocations`, from ListingSearchCity)
+ *
+ *       **Examples:**
+ *       - `GET /admin/master-data?type=countries`
+ *       - `GET /admin/master-data?types=agenttypes,jobtitles,agentexperience`
+ *       - `GET /admin/master-data?types=countries,supportedurls`
  *     tags: [Admin - Master Data]
  *     parameters:
  *       - in: query
  *         name: type
  *         schema:
  *           type: string
- *           enum:
- *             - countries
- *             - amenities
- *             - propertytypes
- *             - listingtypes
- *             - supportedurls
- *         description: Single master-data type to fetch
+ *         required: false
+ *         description: Single master-data type to fetch.
  *       - in: query
  *         name: types
  *         schema:
  *           type: string
- *           example: countries,amenities,supportedurls
- *         description: Comma-separated list of supported types (countries, amenities, propertytypes, listingtypes, supportedurls)
+ *         required: false
+ *         description: Comma-separated list of master-data types to fetch.
  *     responses:
  *       200:
- *         description: Master data fetched successfully
+ *         description: Master data fetched successfully.
  *       400:
- *         description: Missing or invalid type(s)
+ *         description: Validation error (missing or invalid type(s)).
  *       500:
- *         description: Server error
+ *         description: Server error while fetching master data.
  */
 const getMasterData = asyncHandler(async (req, res) => {
   try {
@@ -58,7 +77,17 @@ const getMasterData = asyncHandler(async (req, res) => {
       return failure(res, 400, 'Query parameter "type" or "types" is required', 'VALIDATION_ERROR');
     }
 
-    const supportedTypes = ['countries', 'amenities', 'propertytypes', 'listingtypes','supportedurls'];
+    const supportedTypes = [
+      'countries',
+      'amenities',
+      'propertytypes',
+      'listingtypes',
+      'supportedurls',
+      'agenttypes',
+      'jobtitles',
+      'agentexperience',
+      'propertylocations',
+    ];
     const invalidTypes = requestedTypes.filter((t) => !supportedTypes.includes(t));
 
     if (invalidTypes.length) {
@@ -98,6 +127,28 @@ const getMasterData = asyncHandler(async (req, res) => {
         .sort({ displayOrder: 1, name: 1 })
         .lean();
       data.listingTypes = listingTypes;
+    }
+
+    if (requestedTypes.includes('agenttypes')) {
+      data.agentTypes = AGENT_TYPE_OPTIONS;
+    }
+
+    if (requestedTypes.includes('jobtitles')) {
+      const jobTitles = await JobTitles.find({ isActive: true })
+        .sort({ title: 1 })
+        .lean();
+      data.jobTitles = jobTitles;
+    }
+
+    if (requestedTypes.includes('agentexperience')) {
+      data.agentExperience = AGENT_EXPERIENCE_OPTIONS;
+    }
+
+    if (requestedTypes.includes('propertylocations')) {
+      data.propertyLocations = await ListingSearchCity.find({ propertyCount: { $gt: 0 } })
+        .select('cityKey displayName propertyCount updatedAt')
+        .sort({ displayName: 1 })
+        .lean();
     }
 
     if (requestedTypes.includes('supportedurls')) {

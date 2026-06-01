@@ -682,6 +682,28 @@ uploadService.getAgencyProfileImageUrl = (filename) => {
   return buildProfileImageUrl('img/agency', filename);
 };
 
+const buildEntityMediaUrl = (folder, filename) => {
+  if (!filename || typeof filename !== 'string') return null;
+  const trimmed = String(filename).trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  const isLocal = (process.env.UPLOAD_STORAGE || '').toLowerCase() === 'local';
+  if (trimmed.includes('/')) {
+    if (isLocal) {
+      return `${UPLOADS_BASE_URL}/${trimmed.replace(/^\/+/, '')}`;
+    }
+    const cloud = (process.env.AWS_CLOUDFRONT_URL || '').replace(/\/$/, '');
+    return cloud ? `${cloud}/${trimmed.replace(/^\/+/, '')}` : null;
+  }
+  return buildProfileImageUrl(folder, filename);
+};
+
+/** Property listing image (stored filename under img/property/). */
+uploadService.getPropertyImageUrl = (filename) => buildEntityMediaUrl('img/property', filename);
+
+/** Property video tour (stored under vid/property/). */
+uploadService.getPropertyVideoUrl = (filename) => buildEntityMediaUrl('vid/property', filename);
+
 /** Get full URL for developer logo / profile image. */
 uploadService.getDeveloperProfileImageUrl = (filename) => {
   if (!filename || typeof filename !== 'string') return null;

@@ -1,11 +1,17 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 
+const Agency = require('../models/agenciesModel');
+const Developer = require('../models/developersModel');
 const Agent = require('../models/agentsModel');
 const JobTitles = require('../models/jobTitlesModel');
 const CountriesModel = require('../models/countriesModel');
+const LanguagesModel = require('../models/languagesModel');
 const ActivityLog = require('../models/activityLogModel');
 const uploadService = require('../services/uploadService');
+const { sendInvitationEmail } = require('../services/emailService');
 const {
   success,
   failure,
@@ -18,6 +24,25 @@ const { logger } = require('../utils/logger');
 
 const DEFAULT_PROFILE_PICTURE = 'profileless.png';
 const { Types } = mongoose;
+const FRONTEND_URL = process.env.EXPERTS_UI_URL || '';
+const INVITATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+const normalizeEmail = (email = '') => email.toString().toLowerCase().trim();
+
+const findExistingExpertByEmail = async (email) => {
+  const normalizedEmail = normalizeEmail(email);
+
+  const existingAgency = await Agency.findOne({ email: normalizedEmail }).select('_id');
+  if (existingAgency) return { role: 'agency', entity: existingAgency };
+
+  const existingDeveloper = await Developer.findOne({ email: normalizedEmail }).select('_id');
+  if (existingDeveloper) return { role: 'developer', entity: existingDeveloper };
+
+  const existingAgent = await Agent.findOne({ email: normalizedEmail });
+  if (existingAgent) return { role: 'agent', entity: existingAgent };
+
+  return null;
+};
 
 const getAdminId = (req) =>
   req.admin?.id || req.admin?._id || req.user?.id || req.user?._id;
@@ -54,8 +79,10 @@ const normalizeAgentType = (raw) => {
 const normalizeListSortBy = (raw) => {
   let s = String(raw || '').toLowerCase().trim().replace(/\s+/g, '-');
   if (s === 'approval-pending' || s === 'pending-approval') s = 'pending';
-  if (s === 'declined') s = 'rejected';
-  const allowed = new Set(['active', 'inactive', 'pending', 'rejected']);
+  if (s === 'approval-declined') s = 'declined';
+  if (s === 'invitation-expired') s = 'expired';
+  if (s === 'rejected') s = 'declined';
+  const allowed = new Set(['active', 'inactive', 'pending', 'expired', 'declined', 'invited']);
   return allowed.has(s) ? s : null;
 };
 
@@ -64,9 +91,8 @@ const buildSafeAgent = (agent) => {
   delete safe.passwordResetOTPHash;
   delete safe.passwordResetOTPExpires;
   delete safe.passwordResetEligibleUntil;
-  if (!safe.profilePicture) {
-    safe.profilePicture = DEFAULT_PROFILE_PICTURE;
-  }
+  const storedPicture = uploadService.toStoredProfileFilename(safe.profilePicture);
+  safe.profilePicture = storedPicture || DEFAULT_PROFILE_PICTURE;
   return safe;
 };
 
@@ -74,6 +100,8 @@ const resolveAgentProfilePicturePath = (profilePicture) => {
   if (!profilePicture || profilePicture === DEFAULT_PROFILE_PICTURE) return null;
   return profilePicture.includes('/') ? profilePicture : `img/agents/${profilePicture}`;
 };
+const isDefaultProfilePicture = (value) =>
+  !value || String(value).trim().toLowerCase().includes('profileless.png');
 
 const runWithTimeout = (promise, timeoutMs = 2500) =>
   Promise.race([
@@ -96,15 +124,233 @@ const mapAgentListItem = (agent) => ({
   isVerified: agent.isVerified,
   invitationStatus: agent.invitationStatus,
   agency: agent.agency
-    ? {
-        _id: agent.agency._id || agent.agency,
-        agencyName: agent.agency.agencyName,
-        email: agent.agency.email,
-      }
+    ? (() => {
+        const agencyProfilePicture =
+          uploadService.toStoredProfileFilename(agent.agency.profilePicture) ||
+          DEFAULT_PROFILE_PICTURE;
+        return {
+          _id: agent.agency._id || agent.agency,
+          agencyName: agent.agency.agencyName,
+          email: agent.agency.email,
+          profilePicture: agencyProfilePicture,
+          profilePictureUrl: uploadService.getAgencyProfileImageUrl(agencyProfilePicture),
+        };
+      })()
     : null,
   specialization: agent.specialization,
   createdAt: agent.createdAt,
   lastLogin: agent.lastLogin,
+});
+
+/**
+ * @swagger
+ * /agents/invite-agent:
+ *   post:
+ *     summary: Send agent invitation (admin, agency required)
+ *     tags: [Admin - Agent Management]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [agencyId, email]
+ *             properties:
+ *               agencyId:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               fullName:
+ *                 type: string
+ *               agentType:
+ *                 type: string
+ *                 enum: [agent, superagent]
+ *     responses:
+ *       200:
+ *         description: Invitation sent successfully
+ */
+const sendAgentInvitation = asyncHandler(async (req, res) => {
+  try {
+    const { agencyId, email, fullName, agentType } = req.body || {};
+
+    if (!agencyId || !validateObjectId(agencyId)) {
+      return failure(res, 400, 'Valid agency ID is required', 'VALIDATION_ERROR');
+    }
+
+    if (!email || !isEmail(email)) {
+      return failure(res, 400, 'Valid email is required', 'VALIDATION_ERROR');
+    }
+
+    const agency = await Agency.findById(agencyId);
+    if (!agency) {
+      return failure(res, 404, 'Agency not found', 'NOT_FOUND');
+    }
+
+    if (String(agency.invitationStatus || '').toLowerCase() !== 'accepted') {
+      return failure(
+        res,
+        400,
+        'Agency must complete onboarding before inviting agents',
+        'VALIDATION_ERROR'
+      );
+    }
+
+    const normalizedAgentType = agentType ? normalizeAgentType(agentType) : null;
+    if (agentType && !normalizedAgentType) {
+      return failure(res, 400, 'Invalid agentType', 'VALIDATION_ERROR');
+    }
+
+    const existingExpert = await findExistingExpertByEmail(email);
+    if (existingExpert && existingExpert.role !== 'agent') {
+      return failure(res, 409, `Email already used by ${existingExpert.role}`, 'CONFLICT');
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_MS);
+    const invitationLink = `${FRONTEND_URL}/agent/accept-invitation?token=${token}`;
+    const tempPassword = await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10);
+
+    let agent = existingExpert?.entity;
+
+    if (agent && agent.invitationStatus === 'accepted') {
+      return failure(res, 409, 'Agent already onboarded', 'CONFLICT');
+    }
+
+    if (!agent) {
+      agent = await Agent.create({
+        email: normalizedEmail,
+        fullName: String(fullName || '').trim() || undefined,
+        agency: agency._id,
+        agentType: normalizedAgentType || 'agent',
+        invitationToken: token,
+        invitationStatus: 'pending',
+        invitationSentAt: new Date(),
+        invitationExpiry: expiresAt,
+        isActive: false,
+        isVerified: false,
+        isEmailVerified: false,
+        isPhoneVerified: false,
+        password: tempPassword,
+      });
+    } else {
+      agent.fullName = String(fullName || '').trim() || agent.fullName;
+      agent.agency = agency._id;
+      if (normalizedAgentType) agent.agentType = normalizedAgentType;
+      agent.invitationToken = token;
+      agent.invitationStatus = 'pending';
+      agent.invitationSentAt = new Date();
+      agent.invitationExpiry = expiresAt;
+      agent.isVerified = false;
+      agent.isEmailVerified = false;
+      agent.isPhoneVerified = false;
+      agent.password = tempPassword;
+      agent.isActive = false;
+      agent.deactivationReason = undefined;
+      agent.deactivatedAt = undefined;
+      await agent.save();
+    }
+
+    try {
+      await sendInvitationEmail(
+        normalizedEmail,
+        agent.fullName || 'Agent',
+        invitationLink,
+        agency.agencyName || 'Agency',
+        'Agent Partner'
+      );
+    } catch (emailError) {
+      logger.warn('Failed to send agent invitation email', { error: emailError.message });
+    }
+
+    return success(res, 'Invitation sent successfully', {
+      email: agent.email,
+      invitationToken: token,
+      expiresAt,
+    });
+  } catch (error) {
+    logger.error('Send agent invitation failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to send invitation', 'SERVER_ERROR');
+  }
+});
+
+/**
+ * @swagger
+ * /agents/list:
+ *   get:
+ *     summary: List agents for admin dropdowns (filters, invite flows)
+ *     tags: [Admin - Agent Management]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Optional filter by name, email, or phone
+ *     responses:
+ *       200:
+ *         description: Agent dropdown options fetched successfully
+ */
+const listAgentsForDropdown = asyncHandler(async (req, res) => {
+  try {
+    const { search } = req.query;
+
+    const filter = {
+      invitationStatus: 'accepted',
+      isVerified: true,
+      isActive: true,
+    };
+
+    if (search) {
+      const searchRegex = new RegExp(
+        String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        'i'
+      );
+      filter.$or = [
+        { fullName: searchRegex },
+        { email: searchRegex },
+        { phoneNumber: searchRegex },
+      ];
+    }
+
+    const agents = await Agent.find(filter)
+      .populate('agency', 'agencyName profilePicture')
+      .select('_id fullName email agentType profilePicture agency')
+      .sort({ fullName: 1 })
+      .lean();
+
+    return success(res, 'Agent options fetched successfully', {
+      agents: agents.map((agent) => {
+        const profilePicture =
+          uploadService.toStoredProfileFilename(agent.profilePicture) ||
+          DEFAULT_PROFILE_PICTURE;
+        const agencyProfilePicture = agent.agency
+          ? uploadService.toStoredProfileFilename(agent.agency.profilePicture) ||
+            DEFAULT_PROFILE_PICTURE
+          : null;
+        return {
+          _id: agent._id,
+          fullName: agent.fullName || '',
+          email: agent.email || '',
+          agentType: agent.agentType || 'agent',
+          profilePicture,
+          agency: agent.agency
+            ? {
+                _id: agent.agency._id,
+                agencyName: agent.agency.agencyName || '',
+                profilePicture: agencyProfilePicture,
+              }
+            : null,
+        };
+      }),
+    });
+  } catch (error) {
+    logger.error('List agents for dropdown failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch agent options', 'SERVER_ERROR', error.message);
+  }
 });
 
 /**
@@ -240,15 +486,19 @@ const listAgents = asyncHandler(async (req, res) => {
     if (sortBy === 'active') {
       filter.isVerified = true;
       filter.isActive = true;
-      filter.invitationStatus = { $ne: 'pending' };
+      filter.invitationStatus = 'accepted';
     } else if (sortBy === 'inactive') {
       filter.isVerified = true;
       filter.isActive = false;
     } else if (sortBy === 'pending') {
       filter.invitationStatus = 'accepted';
       filter.isVerified = false;
-    } else if (sortBy === 'rejected') {
+    } else if (sortBy === 'declined') {
       filter.invitationStatus = 'declined';
+    } else if (sortBy === 'expired') {
+      filter.invitationStatus = 'expired';
+    } else if (sortBy === 'invited') {
+      filter.invitationStatus = 'pending';
     }
 
     if (registrationDate) {
@@ -275,7 +525,7 @@ const listAgents = asyncHandler(async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
     const [agents, totalAgents] = await Promise.all([
       Agent.find(filter)
-        .populate('agency', 'agencyName email')
+        .populate('agency', 'agencyName email profilePicture')
         .populate('specialization', 'title')
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -462,6 +712,8 @@ const updateAgent = asyncHandler(async (req, res) => {
       description,
       aboutMe,
       linkedinUrl,
+      whatsappNumber,
+      preferences,
       deactivationReason,
     } = body;
 
@@ -582,6 +834,26 @@ const updateAgent = asyncHandler(async (req, res) => {
     if (linkedinUrl !== undefined) {
       agent.socialLinks = { ...(agent.socialLinks || {}), linkedin: linkedinUrl };
       updatesApplied = true;
+    }
+
+    if (whatsappNumber !== undefined) {
+      track('whatsappNumber', agent.whatsappNumber, String(whatsappNumber || '').trim());
+      agent.whatsappNumber = String(whatsappNumber || '').trim() || undefined;
+    }
+
+    if (preferences && typeof preferences === 'object' && !Array.isArray(preferences)) {
+      agent.preferences = agent.preferences || {};
+      if (
+        preferences.notificationSettings &&
+        typeof preferences.notificationSettings === 'object' &&
+        !Array.isArray(preferences.notificationSettings)
+      ) {
+        agent.preferences.notificationSettings = {
+          ...(agent.preferences.notificationSettings || {}),
+          ...preferences.notificationSettings,
+        };
+        updatesApplied = true;
+      }
     }
 
     if (typeof isEmailVerifiedParsed.value !== 'undefined') {
@@ -869,10 +1141,93 @@ const deleteAgent = asyncHandler(async (req, res) => {
   }
 });
 
+const updateAgentProfilePicture = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const removeRequested = toBoolean(req.body?.removeProfilePicture);
+
+    if (!id || !validateObjectId(id)) {
+      return failure(res, 400, 'Invalid agent ID format');
+    }
+
+    const agent = await Agent.findById(id);
+    if (!agent) {
+      return failure(res, 404, 'Agent not found', 'NOT_FOUND');
+    }
+
+    const previousPicture = agent.profilePicture;
+
+    if (removeRequested && !req.file) {
+      if (!isDefaultProfilePicture(previousPicture)) {
+        const previousPicturePath = resolveAgentProfilePicturePath(previousPicture);
+        if (previousPicturePath) {
+          await uploadService.delete(previousPicturePath).catch((error) => {
+            logger.warn('Failed to delete previous agent profile picture', { error: error.message });
+          });
+        }
+      }
+
+      agent.profilePicture = DEFAULT_PROFILE_PICTURE;
+      await agent.save();
+
+      const safeAgent = buildSafeAgent(agent);
+      safeAgent.profilePictureUrl = uploadService.getAgentProfileImageUrl(agent.profilePicture);
+      return success(res, 'Profile picture removed', { agent: safeAgent }, 200);
+    }
+
+    if (!req.file) {
+      return failure(res, 400, 'No profile picture provided');
+    }
+
+    const uploaded = await uploadService.upload(req.file, 'agents', {
+      generateThumbnail: false,
+    });
+
+    const storedFilename =
+      uploadService.toStoredProfileFilename(uploaded.filename) ||
+      uploadService.toStoredProfileFilename(uploaded.path);
+    if (!storedFilename) {
+      return failure(res, 500, 'Failed to resolve uploaded filename', 'SERVER_ERROR');
+    }
+
+    agent.profilePicture = storedFilename;
+    await agent.save();
+
+    const previousStored = uploadService.toStoredProfileFilename(previousPicture);
+    if (
+      previousStored &&
+      previousStored !== storedFilename &&
+      !isDefaultProfilePicture(previousPicture)
+    ) {
+      const previousPicturePath = resolveAgentProfilePicturePath(previousPicture);
+      if (previousPicturePath) {
+        await uploadService.delete(previousPicturePath).catch((error) => {
+          logger.warn('Failed to delete previous agent profile picture', { error: error.message });
+        });
+      }
+    }
+
+    const safeAgent = buildSafeAgent(agent);
+    safeAgent.profilePictureUrl = uploadService.getAgentProfileImageUrl(agent.profilePicture);
+    const responseData = uploadService.buildStandardResponse(
+      uploaded,
+      { images: 'agents' },
+      { agent: safeAgent }
+    );
+    return success(res, 'Profile picture updated', responseData, 200);
+  } catch (error) {
+    logger.error('Update agent profile picture failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to update profile picture', 'SERVER_ERROR', error.message);
+  }
+});
+
 module.exports = {
+  sendAgentInvitation,
+  listAgentsForDropdown,
   listAgents,
   getAgentDetails,
   updateAgent,
+  updateAgentProfilePicture,
   verifyAgent,
   deleteAgent,
 };

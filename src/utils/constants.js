@@ -21,6 +21,27 @@ const AGENT_TYPES = {
   SUPER_AGENT: 'superagent',
 };
 
+/** UI dropdown options for master-data agenttypes (matches main API). */
+const AGENT_TYPE_OPTIONS = [
+  { name: 'Agent', value: 'agent' },
+  { name: 'Super Agent', value: 'superagent' },
+];
+
+/** Years of experience options for master-data agentexperience (matches main API). */
+const AGENT_EXPERIENCE_OPTIONS = [
+  { name: '0-1 years', value: '1' },
+  { name: '2 years', value: '2' },
+  { name: '3 years', value: '3' },
+  { name: '4 years', value: '4' },
+  { name: '5 years', value: '5' },
+  { name: '6 years', value: '6' },
+  { name: '7 years', value: '7' },
+  { name: '8 years', value: '8' },
+  { name: '9 years', value: '9' },
+  { name: '10 years', value: '10' },
+  { name: '10+ years', value: '10+' },
+];
+
 const SUBSCRIPTION_STATUS = {
   ACTIVE: 'active',
   INACTIVE: 'inactive',
@@ -55,6 +76,8 @@ module.exports = {
   AUTH_PROVIDERS,
   LISTING_TYPES,
   AGENT_TYPES,
+  AGENT_TYPE_OPTIONS,
+  AGENT_EXPERIENCE_OPTIONS,
   SUBSCRIPTION_STATUS,
   INQUIRY_STATUS,
   ERROR_CODES,

@@ -205,6 +205,74 @@ const sendAgencyInvitation = asyncHandler(async (req, res) => {
 
 /**
  * @swagger
+ * /agency/list:
+ *   get:
+ *     summary: List all agencies for admin dropdowns (invite agent, filters)
+ *     tags: [Admin - Agency Management]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Optional filter by agency name, email, or ORN
+ *     responses:
+ *       200:
+ *         description: Agency dropdown options fetched successfully
+ */
+const listAgenciesForDropdown = asyncHandler(async (req, res) => {
+  try {
+    const { search } = req.query;
+
+    const filter = {
+      invitationStatus: 'accepted',
+      isVerified: true,
+      isActive: true,
+    };
+
+    if (search) {
+      const searchRegex = new RegExp(
+        search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        'i'
+      );
+      filter.$or = [
+        { agencyName: searchRegex },
+        { email: searchRegex },
+        { orn: searchRegex },
+      ];
+    }
+
+    const agencies = await Agency.find(filter)
+      .select('_id agencyName email profilePicture isVerified isActive invitationStatus')
+      .sort({ agencyName: 1 })
+      .lean();
+
+    return success(res, 'Agency options fetched successfully', {
+      agencies: agencies.map((agency) => {
+        const profilePicture =
+          uploadService.toStoredProfileFilename(agency.profilePicture) ||
+          DEFAULT_PROFILE_PICTURE;
+        return {
+          _id: agency._id,
+          agencyName: agency.agencyName || '',
+          email: agency.email || '',
+          profilePicture,
+          profilePictureUrl: uploadService.getAgencyProfileImageUrl(profilePicture),
+          isVerified: Boolean(agency.isVerified),
+          isActive: Boolean(agency.isActive),
+          invitationStatus: agency.invitationStatus,
+        };
+      }),
+    });
+  } catch (error) {
+    logger.error('List agencies for dropdown failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch agency options', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
  * /agencies:
  *   get:
  *     summary: List agencies with filters
@@ -1013,6 +1081,7 @@ const updateAgencyProfilePicture = asyncHandler(async (req, res) => {
 
 module.exports = {
   sendAgencyInvitation,
+  listAgenciesForDropdown,
   listAgencies,
   getAgencyDetails,
   updateAgency,
