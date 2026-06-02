@@ -68,6 +68,13 @@ const ERROR_CODES = {
   UNKNOWN_ERROR: 'UNKNOWN_ERROR',
 };
 
+/** Property furnished options for master-data furnishedstatus (matches main API). */
+const FURNISHED_STATUS = [
+  { name: 'Fully Furnished', value: 'fully' },
+  { name: 'Partially Furnished', value: 'partially' },
+  { name: 'Unfurnished', value: 'unfurnished' },
+];
+
 const DOC_EXTENSIONS = ['pdf', 'doc', 'docx'];
 const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
 
@@ -78,6 +85,7 @@ module.exports = {
   AGENT_TYPES,
   AGENT_TYPE_OPTIONS,
   AGENT_EXPERIENCE_OPTIONS,
+  FURNISHED_STATUS,
   SUBSCRIPTION_STATUS,
   INQUIRY_STATUS,
   ERROR_CODES,

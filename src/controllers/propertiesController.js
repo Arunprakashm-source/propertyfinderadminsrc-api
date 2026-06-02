@@ -7,6 +7,10 @@ const PropertyType = require('../models/propertyTypeModel');
 const Amenities = require('../models/amenitiesModel');
 const Agencies = require('../models/agenciesModel');
 const ActivityLog = require('../models/activityLogModel');
+const DealClosure = require('../models/dealClosureModel');
+const Inquirys = require('../models/inquirysModel');
+const Reports = require('../models/reportsModel');
+const Users = require('../models/usersModel');
 const uploadService = require('../services/uploadService');
 const { success, failure, generateSlug } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
@@ -227,6 +231,50 @@ const mapPropertyDetail = (property) =>
         })()
       : null,
   });
+
+const enrichPropertyDealInfoFromClosures = async (property) => {
+  if (!property) return property;
+
+  const status = String(property.status || '').toLowerCase();
+  const hasDealInfo = Boolean(
+    property.dealInfo &&
+      (property.dealInfo.dealType ||
+        property.dealInfo.dealAmount != null ||
+        property.dealInfo.dealClosedDate ||
+        property.dealInfo.customer?.name)
+  );
+
+  if (hasDealInfo || (status !== 'sold' && status !== 'rented')) {
+    return property;
+  }
+
+  const latestDeal = await DealClosure.findOne({
+    dealCategory: 'property',
+    property: property._id,
+    status: { $in: ['approved', 'completed'] },
+  })
+    .select('dealType dealAmount closedDate customer')
+    .sort({ closedDate: -1, createdAt: -1 })
+    .lean();
+
+  if (!latestDeal) return property;
+
+  return {
+    ...property,
+    dealInfo: {
+      dealType: latestDeal.dealType,
+      dealAmount: latestDeal.dealAmount,
+      dealClosedDate: latestDeal.closedDate,
+      customer: latestDeal.customer
+        ? {
+            name: latestDeal.customer.name,
+            email: latestDeal.customer.email,
+            phone: latestDeal.customer.phoneNumber,
+          }
+        : undefined,
+    },
+  };
+};
 
 const buildListSort = (sortByRaw) => {
   const sortBy = String(sortByRaw || 'newest').toLowerCase().trim();
@@ -623,12 +671,45 @@ const getPropertyById = asyncHandler(async (req, res) => {
     }
 
     const [enriched] = await attachAgencyDetails([property]);
+    const enrichedWithDealInfo = await enrichPropertyDealInfoFromClosures(enriched);
     return success(res, 'Property fetched successfully', {
-      property: mapPropertyDetail(enriched),
+      property: mapPropertyDetail(enrichedWithDealInfo),
     });
   } catch (error) {
     logger.error('Get property details failed', { error: error.message, stack: error.stack });
     return failure(res, 500, 'Failed to fetch property', 'SERVER_ERROR', error.message);
+  }
+});
+
+const uploadPropertyMedia = asyncHandler(async (req, res) => {
+  try {
+    const images = Array.isArray(req.files?.images) ? req.files.images : [];
+    const videos = Array.isArray(req.files?.video) ? req.files.video : [];
+
+    if (!images.length && !videos.length) {
+      return failure(res, 400, 'No media files provided', 'VALIDATION_ERROR');
+    }
+
+    const uploadedImages = await Promise.all(
+      images.map((file) => uploadService.upload(file, 'property'))
+    );
+    const uploadedVideos = await Promise.all(
+      videos.map((file) => uploadService.uploadVideo(file, 'property'))
+    );
+
+    return success(res, 'Property media uploaded successfully', {
+      uploads: {
+        images: uploadedImages,
+        videos: uploadedVideos,
+      },
+      propertyUrl: {
+        img: `${uploadService.uploadsBaseUrl}/img/property/`,
+        vid: `${uploadService.uploadsBaseUrl}/vid/property/`,
+      },
+    });
+  } catch (error) {
+    logger.error('Upload property media failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to upload media', 'SERVER_ERROR', error.message);
   }
 });
 
@@ -1133,7 +1214,20 @@ const deleteProperty = asyncHandler(async (req, res) => {
     }
 
     const snapshot = property.toObject ? property.toObject() : property;
-    await deletePropertyMediaFiles(snapshot);
+    const propertyObjectId = property._id;
+
+    await Promise.all([
+      Inquirys.deleteMany({ property: propertyObjectId }),
+      DealClosure.deleteMany({ dealCategory: 'property', property: propertyObjectId }),
+      Reports.deleteMany({ reportType: 'property', reportedItem: propertyObjectId }),
+      Users.updateMany({}, {
+        $pull: {
+          savedProperties: { property: propertyObjectId },
+          contactedProperties: { property: propertyObjectId },
+        },
+      }),
+    ]);
+
     await Properties.deleteOne({ _id: id });
 
     await ActivityLog.create({
@@ -1146,6 +1240,7 @@ const deleteProperty = asyncHandler(async (req, res) => {
       status: 'success',
       timestamp: new Date(),
     });
+    await deletePropertyMediaFiles(snapshot);
 
     return success(res, 'Property deleted successfully');
   } catch (error) {
@@ -1171,6 +1266,7 @@ async function ensureUniqueSlug(baseSlug, excludeId) {
 module.exports = {
   listProperties,
   getPropertyById,
+  uploadPropertyMedia,
   updateProperty,
   deleteProperty,
 };

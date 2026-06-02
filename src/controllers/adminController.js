@@ -6,7 +6,11 @@ const Amenities = require('../models/amenitiesModel');
 const PropertyType = require('../models/propertyTypeModel');
 const ListingType = require('../models/listingTypeModel');
 const JobTitles = require('../models/jobTitlesModel');
-const { AGENT_TYPE_OPTIONS, AGENT_EXPERIENCE_OPTIONS } = require('../utils/constants');
+const {
+  AGENT_TYPE_OPTIONS,
+  AGENT_EXPERIENCE_OPTIONS,
+  FURNISHED_STATUS,
+} = require('../utils/constants');
 const { success, failure } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
 
@@ -31,6 +35,7 @@ const { logger } = require('../utils/logger');
  *       - agentexperience — years of experience dropdown options (response key `agentExperience`, `{ name, value }`)
  *       - supportedurls — CloudFront base URLs for img/vid/doc per entity (response key `supportedUrls`: projectUrl, propertyUrl, agentUrl, agencyUrl, developerUrl, userUrl, amenityUrl, awardUrl)
  *       - propertylocations — cities with property listings (response key `propertyLocations`, from ListingSearchCity)
+ *       - furnishedstatus — furnished dropdown options (response key `furnishedStatus`, `{ name, value }`)
  *
  *       **Examples:**
  *       - `GET /admin/master-data?type=countries`
@@ -87,6 +92,7 @@ const getMasterData = asyncHandler(async (req, res) => {
       'jobtitles',
       'agentexperience',
       'propertylocations',
+      'furnishedstatus',
     ];
     const invalidTypes = requestedTypes.filter((t) => !supportedTypes.includes(t));
 
@@ -149,6 +155,10 @@ const getMasterData = asyncHandler(async (req, res) => {
         .select('cityKey displayName propertyCount updatedAt')
         .sort({ displayName: 1 })
         .lean();
+    }
+
+    if (requestedTypes.includes('furnishedstatus')) {
+      data.furnishedStatus = FURNISHED_STATUS;
     }
 
     if (requestedTypes.includes('supportedurls')) {
