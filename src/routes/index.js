@@ -9,6 +9,7 @@ const agentsRoutes = require('./agentsRoutes');
 const agenciesRoutes = require('./agenciesRoutes');
 const developersRoutes = require('./developersRoutes');
 const propertiesRoutes = require('./propertiesRoutes');
+const reportsRoutes = require('./reportsRoutes');
 
 // Auth routes 
 router.use('/auth', authRoutes);
@@ -28,6 +29,8 @@ router.use('/developers', developersRoutes);
 router.use('/amenities', amenitiesRoutes);
 
 router.use('/properties', propertiesRoutes);
+
+router.use('/reports', reportsRoutes);
 
 
 
