@@ -704,6 +704,15 @@ uploadService.getPropertyImageUrl = (filename) => buildEntityMediaUrl('img/prope
 /** Property video tour (stored under vid/property/). */
 uploadService.getPropertyVideoUrl = (filename) => buildEntityMediaUrl('vid/property', filename);
 
+/** Project listing image (stored filename under img/project/). */
+uploadService.getProjectImageUrl = (filename) => buildEntityMediaUrl('img/project', filename);
+
+/** Project video tour (stored under vid/project/). */
+uploadService.getProjectVideoUrl = (filename) => buildEntityMediaUrl('vid/project', filename);
+
+/** Project document e.g. brochure (stored under doc/project/). */
+uploadService.getProjectDocumentUrl = (filename) => buildEntityMediaUrl('doc/project', filename);
+
 /** Get full URL for developer logo / profile image. */
 uploadService.getDeveloperProfileImageUrl = (filename) => {
   if (!filename || typeof filename !== 'string') return null;

@@ -35,12 +35,14 @@ const { logger } = require('../utils/logger');
  *       - agentexperience — years of experience dropdown options (response key `agentExperience`, `{ name, value }`)
  *       - supportedurls — CloudFront base URLs for img/vid/doc per entity (response key `supportedUrls`: projectUrl, propertyUrl, agentUrl, agencyUrl, developerUrl, userUrl, amenityUrl, awardUrl)
  *       - propertylocations — cities with property listings (response key `propertyLocations`, from ListingSearchCity)
+ *       - projectlocations — cities with published projects (response key `projectLocations`; alias `projectlocation`)
  *       - furnishedstatus — furnished dropdown options (response key `furnishedStatus`, `{ name, value }`)
  *
  *       **Examples:**
  *       - `GET /admin/master-data?type=countries`
  *       - `GET /admin/master-data?types=agenttypes,jobtitles,agentexperience`
  *       - `GET /admin/master-data?types=countries,supportedurls`
+ *       - `GET /admin/master-data?types=projectlocations`
  *     tags: [Admin - Master Data]
  *     parameters:
  *       - in: query
@@ -92,6 +94,8 @@ const getMasterData = asyncHandler(async (req, res) => {
       'jobtitles',
       'agentexperience',
       'propertylocations',
+      'projectlocations',
+      'projectlocation',
       'furnishedstatus',
     ];
     const invalidTypes = requestedTypes.filter((t) => !supportedTypes.includes(t));
@@ -155,6 +159,18 @@ const getMasterData = asyncHandler(async (req, res) => {
         .select('cityKey displayName propertyCount updatedAt')
         .sort({ displayName: 1 })
         .lean();
+    }
+
+    if (
+      requestedTypes.includes('projectlocations') ||
+      requestedTypes.includes('projectlocation')
+    ) {
+      const projectLocations = await ListingSearchCity.find({ projectCount: { $gt: 0 } })
+        .select('cityKey displayName projectCount updatedAt')
+        .sort({ displayName: 1 })
+        .lean();
+      data.projectLocations = projectLocations;
+      data.projectlocations = projectLocations;
     }
 
     if (requestedTypes.includes('furnishedstatus')) {

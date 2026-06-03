@@ -1053,8 +1053,78 @@ const updateDeveloperProfilePicture = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /developers/list:
+ *   get:
+ *     summary: List developers for admin dropdowns (listing project filters)
+ *     description: Returns accepted, verified, active developers sorted by name for filter dropdowns.
+ *     tags: [Admin - Developer Management]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Optional filter by developer name or email
+ *     responses:
+ *       200:
+ *         description: Developer options fetched successfully
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+const listDevelopersForDropdown = asyncHandler(async (req, res) => {
+  try {
+    const { search } = req.query;
+    const filter = {
+      invitationStatus: 'accepted',
+      isVerified: true,
+      isActive: true,
+    };
+
+    if (search) {
+      const searchRegex = new RegExp(
+        search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        'i'
+      );
+      filter.$or = [{ name: searchRegex }, { email: searchRegex }];
+    }
+
+    const developers = await Developer.find(filter)
+      .select('_id name email profilePicture logo isVerified isActive invitationStatus')
+      .sort({ name: 1 })
+      .lean();
+
+    return success(res, 'Developer options fetched successfully', {
+      developers: developers.map((developer) => {
+        const profilePicture = getDisplayImage(developer);
+        return {
+          _id: developer._id,
+          name: developer.name || '',
+          email: developer.email || '',
+          profilePicture,
+          profilePictureUrl: uploadService.getDeveloperProfileImageUrl(profilePicture),
+          isVerified: Boolean(developer.isVerified),
+          isActive: Boolean(developer.isActive),
+          invitationStatus: developer.invitationStatus,
+        };
+      }),
+    });
+  } catch (error) {
+    logger.error('List developers for dropdown failed', {
+      error: error.message,
+      stack: error.stack,
+    });
+    return failure(res, 500, 'Failed to fetch developer options', 'SERVER_ERROR', error.message);
+  }
+});
+
 module.exports = {
   sendDeveloperInvitation,
+  listDevelopersForDropdown,
   listDevelopers,
   getDeveloperDetails,
   updateDeveloper,
