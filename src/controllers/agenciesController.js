@@ -18,6 +18,7 @@ const {
   isEmail,
 } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
+const { countInvitationAccountStats } = require('../utils/accountListCounts');
 
 const DEFAULT_PROFILE_PICTURE = 'profileless.png';
 const { Types } = mongoose;
@@ -422,7 +423,7 @@ const listAgencies = asyncHandler(async (req, res) => {
 
     const skip = (pageNum - 1) * limitNum;
 
-    const [agencies, totalAgencies] = await Promise.all([
+    const [agencies, totalAgencies, counts] = await Promise.all([
       Agency.find(filter)
         .populate('nationality', 'name code')
         .sort({ createdAt: -1 })
@@ -430,6 +431,7 @@ const listAgencies = asyncHandler(async (req, res) => {
         .limit(limitNum)
         .lean(),
       Agency.countDocuments(filter),
+      countInvitationAccountStats(Agency),
     ]);
 
     const agencyIds = agencies.map((a) => a._id);
@@ -457,6 +459,15 @@ const listAgencies = asyncHandler(async (req, res) => {
         limit: limitNum,
         hasNextPage: pageNum < totalPages,
         hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalAgencies: counts.total,
+        activeAgencies: counts.active,
+        inactiveAgencies: counts.inactive,
+        approvalPendingAgencies: counts.approvalPending,
+        declinedAgencies: counts.declined,
+        invitedAgencies: counts.invited,
+        expiredAgencies: counts.expired,
       },
     });
   } catch (error) {

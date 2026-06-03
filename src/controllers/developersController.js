@@ -19,6 +19,7 @@ const {
   isEmail,
 } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
+const { countInvitationAccountStats } = require('../utils/accountListCounts');
 
 const DEFAULT_PROFILE_PICTURE = 'profileless.png';
 const { Types } = mongoose;
@@ -348,7 +349,7 @@ const listDevelopers = asyncHandler(async (req, res) => {
 
     const skip = (pageNum - 1) * limitNum;
 
-    const [developers, totalDevelopers] = await Promise.all([
+    const [developers, totalDevelopers, counts] = await Promise.all([
       Developer.find(filter)
         .populate('nationality', 'name code')
         .sort({ createdAt: -1 })
@@ -356,6 +357,7 @@ const listDevelopers = asyncHandler(async (req, res) => {
         .limit(limitNum)
         .lean(),
       Developer.countDocuments(filter),
+      countInvitationAccountStats(Developer),
     ]);
 
     const developerIds = developers.map((d) => d._id);
@@ -383,6 +385,15 @@ const listDevelopers = asyncHandler(async (req, res) => {
         limit: limitNum,
         hasNextPage: pageNum < totalPages,
         hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalDevelopers: counts.total,
+        activeDevelopers: counts.active,
+        inactiveDevelopers: counts.inactive,
+        approvalPendingDevelopers: counts.approvalPending,
+        declinedDevelopers: counts.declined,
+        invitedDevelopers: counts.invited,
+        expiredDevelopers: counts.expired,
       },
     });
   } catch (error) {

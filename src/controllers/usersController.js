@@ -34,6 +34,8 @@ const runWithTimeout = (promise, timeoutMs = 2500) =>
     }),
   ]);
 
+const { countUserListStats } = require('../utils/accountListCounts');
+
 const normalizeUsersSortBy = (raw) => {
   const value = String(raw || '').toLowerCase().trim().replace(/\s+/g, '-');
   const allowed = new Set(['all', 'active', 'inactive', 'banned']);
@@ -346,17 +348,13 @@ const listUsers = asyncHandler(async (req, res) => {
 
     // Get total counts for statistics and users
     const [
-      totalUsers,
-      activeUsers,
-      bannedUsers,
+      userStats,
       verifiedEmails,
       verifiedPhones,
       filteredCount,
       users,
     ] = await Promise.all([
-      UsersModel.countDocuments({}),
-      UsersModel.countDocuments({ isActive: true }),
-      UsersModel.countDocuments({ isBanned: true }),
+      countUserListStats(UsersModel),
       UsersModel.countDocuments({ isEmailVerified: true }),
       UsersModel.countDocuments({ isPhoneVerified: true }),
       UsersModel.countDocuments(query),
@@ -407,9 +405,10 @@ const listUsers = asyncHandler(async (req, res) => {
         hasPrevPage,
       },
       counts: {
-        totalUsers,
-        activeUsers,
-        bannedUsers,
+        totalUsers: userStats.total,
+        activeUsers: userStats.active,
+        inactiveUsers: userStats.inactive,
+        bannedUsers: userStats.banned,
         verifiedEmails,
         verifiedPhones,
       },

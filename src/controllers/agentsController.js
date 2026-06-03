@@ -21,6 +21,7 @@ const {
   isEmail,
 } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
+const { countInvitationAccountStats } = require('../utils/accountListCounts');
 
 const DEFAULT_PROFILE_PICTURE = 'profileless.png';
 const { Types } = mongoose;
@@ -523,7 +524,7 @@ const listAgents = asyncHandler(async (req, res) => {
     }
 
     const skip = (pageNum - 1) * limitNum;
-    const [agents, totalAgents] = await Promise.all([
+    const [agents, totalAgents, counts] = await Promise.all([
       Agent.find(filter)
         .populate('agency', 'agencyName email profilePicture')
         .populate('specialization', 'title')
@@ -532,6 +533,7 @@ const listAgents = asyncHandler(async (req, res) => {
         .limit(limitNum)
         .lean(),
       Agent.countDocuments(filter),
+      countInvitationAccountStats(Agent),
     ]);
 
     const totalPages = Math.ceil(totalAgents / limitNum) || 1;
@@ -545,6 +547,15 @@ const listAgents = asyncHandler(async (req, res) => {
         limit: limitNum,
         hasNextPage: pageNum < totalPages,
         hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalAgents: counts.total,
+        activeAgents: counts.active,
+        inactiveAgents: counts.inactive,
+        approvalPendingAgents: counts.approvalPending,
+        declinedAgents: counts.declined,
+        invitedAgents: counts.invited,
+        expiredAgents: counts.expired,
       },
     });
   } catch (error) {

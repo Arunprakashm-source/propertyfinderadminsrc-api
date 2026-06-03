@@ -577,7 +577,7 @@ const getProjectById = asyncHandler(async (req, res) => {
       return failure(res, 400, 'Invalid project ID', 'VALIDATION_ERROR');
     }
 
-    const project = await Newprojects.findOne({ _id: id, isActive: true })
+    const project = await Newprojects.findById(id)
       .populate('amenities', 'name slug category icon image')
       .populate('developer', 'name email profilePicture logo')
       .populate('authorizedAgencies', 'agencyName email profilePicture')
@@ -690,7 +690,7 @@ const updateProjectById = asyncHandler(async (req, res) => {
       return failure(res, 400, 'Invalid project ID', 'VALIDATION_ERROR');
     }
 
-    const project = await Newprojects.findOne({ _id: id, isActive: true });
+    const project = await Newprojects.findById(id);
     if (!project) {
       return failure(res, 404, 'Project not found', 'NOT_FOUND');
     }
