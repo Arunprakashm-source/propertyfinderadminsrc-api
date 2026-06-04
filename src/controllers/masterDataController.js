@@ -9,6 +9,9 @@ const ListingType = require('../models/listingTypeModel');
 const JobTitles = require('../models/jobTitlesModel');
 const Languages = require('../models/languagesModel');
 const Agent = require('../models/agentsModel');
+const Users = require('../models/usersModel');
+const Agencies = require('../models/agenciesModel');
+const Developers = require('../models/developersModel');
 const Properties = require('../models/propertiesModal');
 const Newprojects = require('../models/newprojectsModel');
 const ProjectLayout = require('../models/projectLayoutModel');
@@ -22,6 +25,12 @@ const {
 const { success, failure, generateSlug } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
 const uploadService = require('../services/uploadService');
+const {
+  normalizeCityKey,
+  toDisplayName,
+  buildListFilter,
+  countLocationStats,
+} = require('../services/listingSearchCityService');
 
 const { Types } = mongoose;
 
@@ -70,6 +79,88 @@ const countLanguageStats = async () => {
     Languages.countDocuments({ isActive: false }),
   ]);
   return { total, active, inactive };
+};
+
+const countCountryStats = async () => {
+  const [total, active, inactive] = await Promise.all([
+    Countries.countDocuments({}),
+    Countries.countDocuments({ isActive: true }),
+    Countries.countDocuments({ isActive: false }),
+  ]);
+  return { total, active, inactive };
+};
+
+const parseCountryBody = (body = {}, { isCreate = false } = {}) => {
+  const data = {};
+
+  if (body.name !== undefined) {
+    data.name = String(body.name).trim();
+  }
+  if (body.code !== undefined) {
+    data.code = body.code ? String(body.code).trim().toUpperCase() : '';
+  }
+  if (body.phoneCode !== undefined) {
+    data.phoneCode = body.phoneCode ? String(body.phoneCode).trim() : '';
+  }
+  if (body.flag !== undefined) {
+    data.flag = body.flag ? String(body.flag).trim() : '';
+  }
+  if (body.currency !== undefined || body.currencyCode !== undefined || body.currencySymbol !== undefined) {
+    const currency = {};
+    if (body.currency?.code !== undefined || body.currencyCode !== undefined) {
+      const code = body.currency?.code ?? body.currencyCode;
+      currency.code = code ? String(code).trim().toUpperCase() : '';
+    }
+    if (body.currency?.symbol !== undefined || body.currencySymbol !== undefined) {
+      const symbol = body.currency?.symbol ?? body.currencySymbol;
+      currency.symbol = symbol ? String(symbol).trim() : '';
+    }
+    if (currency.code || currency.symbol) {
+      data.currency = currency;
+    } else if (body.currency === null) {
+      data.currency = undefined;
+    }
+  }
+  if (body.isActive !== undefined) {
+    data.isActive = parseBoolField(body.isActive);
+  }
+  if (body.displayOrder !== undefined && body.displayOrder !== '') {
+    const order = parseInt(body.displayOrder, 10);
+    if (Number.isNaN(order) || order < 0) {
+      return { error: 'displayOrder must be a non-negative integer' };
+    }
+    data.displayOrder = order;
+  }
+
+  if (isCreate && !data.name) {
+    return { error: 'Name is required' };
+  }
+  if (isCreate && !data.code) {
+    return { error: 'Code is required' };
+  }
+  if (data.name && data.name.length > 120) {
+    return { error: 'Name must be 120 characters or less' };
+  }
+  if (data.code && (data.code.length < 2 || data.code.length > 3)) {
+    return { error: 'Code must be 2–3 characters (ISO country code)' };
+  }
+  if (data.phoneCode && data.phoneCode.length > 12) {
+    return { error: 'Phone code must be 12 characters or less' };
+  }
+  if (data.flag && data.flag.length > 500) {
+    return { error: 'Flag URL must be 500 characters or less' };
+  }
+  if (data.flag && !/^https?:\/\//i.test(data.flag)) {
+    return { error: 'Flag must be a valid http or https URL' };
+  }
+  if (data.currency?.code && data.currency.code.length > 10) {
+    return { error: 'Currency code must be 10 characters or less' };
+  }
+  if (data.currency?.symbol && data.currency.symbol.length > 10) {
+    return { error: 'Currency symbol must be 10 characters or less' };
+  }
+
+  return { data };
 };
 
 const parseLanguageBody = (body = {}, { isCreate = false } = {}) => {
@@ -255,7 +346,70 @@ const deleteStoredAmenityImage = async (filename) => {
 };
 
 /**
- * GET /master-data — dropdown / lookup master data (existing behaviour).
+ * @swagger
+ * /master-data:
+ *   get:
+ *     summary: Get master data lookup lists (dropdowns / filters)
+ *     description: |
+ *       Returns one or more master-data collections for admin and shared UI lookups.
+ *       Request a single type with `type`, or several with comma-separated `types`.
+ *       At least one of `type` or `types` is required.
+ *
+ *       **Supported `type` / `types` values (ADMIN API):**
+ *       - `countries` — active countries (`displayOrder`, name); includes code, phoneCode, flag, currency
+ *       - `amenities` — active amenities (displayOrder, name)
+ *       - `propertytypes` — active property types
+ *       - `listingtypes` — active listing types
+ *       - `jobtitles` — active job titles
+ *       - `languages` — active languages
+ *       - `agenttypes` — static agent type options `{ name, value }`
+ *       - `agentexperience` — static experience year options `{ name, value }`
+ *       - `furnishedstatus` — static furnished options `{ name, value }`
+ *       - `propertylocations` — cities with property listings (`cityKey`, `displayName`, `propertyCount`)
+ *       - `projectlocations` or `projectlocation` — cities with projects (`cityKey`, `displayName`, `projectCount`); both keys returned when either is requested
+ *       - `supportedurls` — CDN base URL map for project, property, agent, agency, developer, user, amenity, award assets
+ *
+ *       **Example:** `GET /master-data?types=countries,languages,jobtitles`
+ *     tags: [Admin - Master Data - Lookup]
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *           enum:
+ *             - countries
+ *             - amenities
+ *             - propertytypes
+ *             - listingtypes
+ *             - supportedurls
+ *             - agenttypes
+ *             - jobtitles
+ *             - languages
+ *             - agentexperience
+ *             - propertylocations
+ *             - projectlocations
+ *             - projectlocation
+ *             - furnishedstatus
+ *         required: false
+ *         description: Single master-data type to fetch.
+ *       - in: query
+ *         name: types
+ *         schema:
+ *           type: string
+ *           example: countries,languages,jobtitles
+ *         required: false
+ *         description: Comma-separated list of master-data types (same values as `type`).
+ *     responses:
+ *       200:
+ *         description: |
+ *           Master data fetched successfully. Response `data` includes only the keys you requested, e.g.
+ *           `countries`, `amenities`, `propertyTypes`, `listingTypes`, `jobTitles`, `languages`,
+ *           `agentTypes`, `agentExperience`, `furnishedStatus`, `propertyLocations`, `projectLocations`,
+ *           `supportedUrls`.
+ *       400:
+ *         description: Missing `type`/`types`, or invalid type name(s) in `VALIDATION_ERROR`
+ *       500:
+ *         description: Server error while fetching master data
  */
 const getMasterData = asyncHandler(async (req, res) => {
   try {
@@ -284,6 +438,7 @@ const getMasterData = asyncHandler(async (req, res) => {
       'supportedurls',
       'agenttypes',
       'jobtitles',
+      'languages',
       'agentexperience',
       'propertylocations',
       'projectlocations',
@@ -1802,6 +1957,822 @@ const deleteLanguage = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /master-data/countries:
+ *   get:
+ *     summary: List countries with filters, pagination, and stat counts
+ *     tags: [Admin - Master Data - Countries]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: isActive
+ *         schema:
+ *           type: boolean
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *           maximum: 100
+ *     responses:
+ *       200:
+ *         description: Countries fetched successfully
+ */
+const listCountries = asyncHandler(async (req, res) => {
+  try {
+    const { search, isActive, page = 1, limit = 20 } = req.query;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
+
+    if (Number.isNaN(pageNum) || pageNum < 1) {
+      return failure(res, 400, 'Page must be a positive integer', 'VALIDATION_ERROR');
+    }
+    if (Number.isNaN(limitNum) || limitNum < 1) {
+      return failure(res, 400, 'Limit must be between 1 and 100', 'VALIDATION_ERROR');
+    }
+
+    const filter = {};
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
+      filter.$or = [
+        { name: rx },
+        { code: rx },
+        { phoneCode: rx },
+        { 'currency.code': rx },
+      ];
+    }
+    if (isActive !== undefined && isActive !== '') {
+      filter.isActive = parseBoolField(isActive);
+    }
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const [countries, filteredCount, counts] = await Promise.all([
+      Countries.find(filter).sort({ displayOrder: 1, name: 1 }).skip(skip).limit(limitNum).lean(),
+      Countries.countDocuments(filter),
+      countCountryStats(),
+    ]);
+
+    const totalPages = Math.ceil(filteredCount / limitNum) || 1;
+
+    return success(res, 'Countries fetched successfully', {
+      countries,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalCountries: filteredCount,
+        limit: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalCountries: counts.total,
+        activeCountries: counts.active,
+        inactiveCountries: counts.inactive,
+      },
+    });
+  } catch (error) {
+    logger.error('List countries failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch countries', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
+ * /master-data/countries:
+ *   post:
+ *     summary: Create a country
+ *     tags: [Admin - Master Data - Countries]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - code
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: Afghanistan
+ *               code:
+ *                 type: string
+ *                 example: AF
+ *               phoneCode:
+ *                 type: string
+ *                 example: "+93"
+ *               flag:
+ *                 type: string
+ *                 example: https://flagcdn.com/w80/af.png
+ *               currency:
+ *                 type: object
+ *                 properties:
+ *                   code:
+ *                     type: string
+ *                     example: AFN
+ *                   symbol:
+ *                     type: string
+ *                     example: "؋"
+ *               isActive:
+ *                 type: boolean
+ *               displayOrder:
+ *                 type: integer
+ *     responses:
+ *       201:
+ *         description: Country created successfully
+ */
+const createCountry = asyncHandler(async (req, res) => {
+  try {
+    const parsed = parseCountryBody(req.body, { isCreate: true });
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const { name, code, phoneCode, flag, currency, isActive, displayOrder } = parsed.data;
+
+    const duplicateFilter = [{ name: new RegExp(`^${escapeRegex(name)}$`, 'i') }];
+    if (code) {
+      duplicateFilter.push({ code: new RegExp(`^${escapeRegex(code)}$`, 'i') });
+    }
+    const existing = await Countries.findOne({ $or: duplicateFilter });
+    if (existing) {
+      if (existing.name.toLowerCase() === name.toLowerCase()) {
+        return failure(res, 409, 'Country with this name already exists', 'DUPLICATE');
+      }
+      return failure(res, 409, 'Country with this code already exists', 'DUPLICATE');
+    }
+
+    const order =
+      displayOrder !== undefined ? displayOrder : await nextDisplayOrder(Countries);
+
+    const country = await Countries.create({
+      name,
+      code,
+      phoneCode: phoneCode || undefined,
+      flag: flag || undefined,
+      currency: currency || undefined,
+      isActive: isActive !== undefined ? isActive : true,
+      displayOrder: order,
+    });
+
+    return success(res, 'Country created successfully', { country }, 201);
+  } catch (error) {
+    logger.error('Create country failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Country already exists', 'DUPLICATE');
+    }
+    return failure(res, 500, 'Failed to create country', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
+ * /master-data/countries/{id}:
+ *   put:
+ *     summary: Update a country
+ *     tags: [Admin - Master Data - Countries]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Country updated successfully
+ */
+const updateCountry = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid country ID', 'VALIDATION_ERROR');
+    }
+
+    const country = await Countries.findById(id);
+    if (!country) {
+      return failure(res, 404, 'Country not found', 'NOT_FOUND');
+    }
+
+    const parsed = parseCountryBody(req.body);
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const updateData = parsed.data;
+    if (!Object.keys(updateData).length) {
+      return failure(res, 400, 'At least one field must be provided for update', 'VALIDATION_ERROR');
+    }
+
+    if (updateData.name) {
+      const nameTaken = await Countries.findOne({
+        _id: { $ne: id },
+        name: new RegExp(`^${escapeRegex(updateData.name)}$`, 'i'),
+      });
+      if (nameTaken) {
+        return failure(res, 409, 'Country with this name already exists', 'DUPLICATE');
+      }
+    }
+
+    if (updateData.code) {
+      const codeTaken = await Countries.findOne({
+        _id: { $ne: id },
+        code: new RegExp(`^${escapeRegex(updateData.code)}$`, 'i'),
+      });
+      if (codeTaken) {
+        return failure(res, 409, 'Country with this code already exists', 'DUPLICATE');
+      }
+    }
+
+    if (updateData.currency) {
+      updateData.currency = {
+        code: updateData.currency.code ?? country.currency?.code ?? '',
+        symbol: updateData.currency.symbol ?? country.currency?.symbol ?? '',
+      };
+    }
+
+    Object.assign(country, updateData);
+    await country.save();
+
+    return success(res, 'Country updated successfully', { country });
+  } catch (error) {
+    logger.error('Update country failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Country already exists', 'DUPLICATE');
+    }
+    return failure(res, 500, 'Failed to update country', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
+ * /master-data/countries/{id}:
+ *   delete:
+ *     summary: Delete a country
+ *     tags: [Admin - Master Data - Countries]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Country deleted successfully
+ *       400:
+ *         description: Country in use
+ */
+const deleteCountry = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid country ID', 'VALIDATION_ERROR');
+    }
+
+    const country = await Countries.findById(id);
+    if (!country) {
+      return failure(res, 404, 'Country not found', 'NOT_FOUND');
+    }
+
+    const [userCount, agentCount, agencyCount, developerCount] = await Promise.all([
+      Users.countDocuments({ country: id }),
+      Agent.countDocuments({ nationality: id }),
+      Agencies.countDocuments({ nationality: id }),
+      Developers.countDocuments({ nationality: id }),
+    ]);
+
+    const inUse = userCount + agentCount + agencyCount + developerCount;
+    if (inUse > 0) {
+      return failure(
+        res,
+        400,
+        'Cannot delete country linked to users or accounts. Deactivate it instead.',
+        'IN_USE'
+      );
+    }
+
+    await Countries.findByIdAndDelete(id);
+    return success(res, 'Country deleted successfully', {});
+  } catch (error) {
+    logger.error('Delete country failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to delete country', 'SERVER_ERROR', error.message);
+  }
+});
+
+const parseListingSearchCityBody = (body = {}, { isCreate = false } = {}) => {
+  const data = {};
+
+  if (body.displayName !== undefined) {
+    data.displayName = String(body.displayName).trim();
+  }
+  if (body.cityKey !== undefined && body.cityKey !== '') {
+    data.cityKey = normalizeCityKey(body.cityKey);
+  }
+
+  if (isCreate && !data.displayName) {
+    return { error: 'Display name is required' };
+  }
+  if (data.displayName && data.displayName.length > 120) {
+    return { error: 'Display name must be 120 characters or less' };
+  }
+
+  if (isCreate) {
+    const key = data.cityKey || normalizeCityKey(data.displayName);
+    if (!key) {
+      return { error: 'Could not derive a valid city key from display name' };
+    }
+    data.cityKey = key;
+    data.displayName = toDisplayName(data.displayName) || data.displayName;
+  } else if (data.displayName) {
+    data.displayName = toDisplayName(data.displayName) || data.displayName;
+  }
+
+  if (data.cityKey === null) {
+    return { error: 'Invalid city key' };
+  }
+
+  return { data };
+};
+
+const mapLocationForKind = (doc, kind) => {
+  if (!doc) return doc;
+  if (kind === 'property') {
+    const { projectCount: _omit, ...rest } = doc;
+    return rest;
+  }
+  const { propertyCount: _omit, ...rest } = doc;
+  return rest;
+};
+
+const listListingSearchCitiesHandler = async (req, res, { kind, countField, responseKey, label }) => {
+  try {
+    const { search, linkedOnly, page = 1, limit = 20 } = req.query;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
+
+    if (Number.isNaN(pageNum) || pageNum < 1) {
+      return failure(res, 400, 'Page must be a positive integer', 'VALIDATION_ERROR');
+    }
+    if (Number.isNaN(limitNum) || limitNum < 1) {
+      return failure(res, 400, 'Limit must be between 1 and 100', 'VALIDATION_ERROR');
+    }
+
+    const filter = buildListFilter({
+      kind,
+      countField,
+      search,
+      linkedOnly: parseBoolField(linkedOnly),
+    });
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const [rawLocations, filteredCount, stats] = await Promise.all([
+      ListingSearchCity.find(filter)
+        .sort({ displayName: 1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      ListingSearchCity.countDocuments(filter),
+      countLocationStats(kind),
+    ]);
+
+    const locations = rawLocations.map((doc) => mapLocationForKind(doc, kind));
+    const totalPages = Math.ceil(filteredCount / limitNum) || 1;
+
+    const counts =
+      kind === 'property'
+        ? {
+            totalLocations: stats.totalLocations,
+            withPropertyListings: stats.withListings,
+          }
+        : {
+            totalLocations: stats.totalLocations,
+            withProjectListings: stats.withListings,
+          };
+
+    return success(res, `${label} fetched successfully`, {
+      [responseKey]: locations,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalLocations: filteredCount,
+        limit: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      counts,
+    });
+  } catch (error) {
+    logger.error(`List ${label} failed`, { error: error.message, stack: error.stack });
+    return failure(res, 500, `Failed to fetch ${label}`, 'SERVER_ERROR', error.message);
+  }
+};
+
+const createListingSearchCityHandler = async (req, res, { kind, responseKey, label }) => {
+  try {
+    const parsed = parseListingSearchCityBody(req.body, { isCreate: true });
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const { displayName, cityKey } = parsed.data;
+
+    const existing = await ListingSearchCity.findOne({
+      cityKey: new RegExp(`^${escapeRegex(cityKey)}$`, 'i'),
+    });
+    if (existing) {
+      return failure(res, 409, 'A location with this city key already exists', 'DUPLICATE');
+    }
+
+    const location = await ListingSearchCity.create({
+      displayName,
+      cityKey,
+      propertyCount: 0,
+      projectCount: 0,
+    });
+
+    const created = location.toObject();
+    return success(
+      res,
+      `${label} created successfully`,
+      { [responseKey]: mapLocationForKind(created, kind) },
+      201,
+    );
+  } catch (error) {
+    logger.error(`Create ${label} failed`, { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Location already exists', 'DUPLICATE');
+    }
+    return failure(res, 500, `Failed to create ${label}`, 'SERVER_ERROR', error.message);
+  }
+};
+
+const updateListingSearchCityHandler = async (req, res, { kind, responseKey, label }) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid location ID', 'VALIDATION_ERROR');
+    }
+
+    const location = await ListingSearchCity.findById(id);
+    if (!location) {
+      return failure(res, 404, 'Location not found', 'NOT_FOUND');
+    }
+
+    const parsed = parseListingSearchCityBody(req.body);
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const updateData = parsed.data;
+    delete updateData.cityKey;
+
+    if (!Object.keys(updateData).length) {
+      return failure(res, 400, 'At least one field must be provided for update', 'VALIDATION_ERROR');
+    }
+
+    Object.assign(location, updateData);
+    await location.save();
+
+    const updated = location.toObject();
+    return success(res, `${label} updated successfully`, {
+      [responseKey]: mapLocationForKind(updated, kind),
+    });
+  } catch (error) {
+    logger.error(`Update ${label} failed`, { error: error.message, stack: error.stack });
+    return failure(res, 500, `Failed to update ${label}`, 'SERVER_ERROR', error.message);
+  }
+};
+
+const deleteListingSearchCityHandler = async (req, res, { countField, label }) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid location ID', 'VALIDATION_ERROR');
+    }
+
+    const location = await ListingSearchCity.findById(id);
+    if (!location) {
+      return failure(res, 404, 'Location not found', 'NOT_FOUND');
+    }
+
+    const otherField = countField === 'propertyCount' ? 'projectCount' : 'propertyCount';
+    const listingLabel = countField === 'propertyCount' ? 'property' : 'project';
+
+    if (location[countField] > 0) {
+      return failure(
+        res,
+        400,
+        `Cannot delete location while it has linked ${listingLabel} listings. Counts update automatically when listings publish or unpublish.`,
+        'IN_USE'
+      );
+    }
+
+    if (location[otherField] > 0) {
+      return failure(
+        res,
+        400,
+        `Cannot delete this city while it is still linked to ${otherField === 'propertyCount' ? 'property' : 'project'} listings.`,
+        'IN_USE'
+      );
+    }
+
+    await ListingSearchCity.findByIdAndDelete(id);
+    return success(res, `${label} deleted successfully`, {});
+  } catch (error) {
+    logger.error(`Delete ${label} failed`, { error: error.message, stack: error.stack });
+    return failure(res, 500, `Failed to delete ${label}`, 'SERVER_ERROR', error.message);
+  }
+};
+
+/**
+ * @swagger
+ * /master-data/property-locations:
+ *   get:
+ *     summary: List property search cities (ListingSearchCity index)
+ *     description: |
+ *       Admin CRUD for cities used in property search filters (`GET /master-data?types=propertylocations` returns only rows with `propertyCount > 0`).
+ *       Listing counts are maintained automatically when properties are published/updated.
+ *     tags: [Admin - Master Data - Property Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: linkedOnly
+ *         schema:
+ *           type: boolean
+ *         description: If true, only cities with propertyCount > 0 (same as public master-data dropdown)
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Property locations fetched (propertyLocations, pagination, counts)
+ */
+const listPropertyLocations = asyncHandler(async (req, res) =>
+  listListingSearchCitiesHandler(req, res, {
+    kind: 'property',
+    countField: 'propertyCount',
+    responseKey: 'propertyLocations',
+    label: 'property locations',
+  })
+);
+
+/**
+ * @swagger
+ * /master-data/property-locations:
+ *   post:
+ *     summary: Create a property search city
+ *     tags: [Admin - Master Data - Property Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - displayName
+ *             properties:
+ *               displayName:
+ *                 type: string
+ *                 example: Dubai
+ *               cityKey:
+ *                 type: string
+ *                 description: Optional; derived from displayName if omitted
+ *     responses:
+ *       201:
+ *         description: Property location created
+ */
+const createPropertyLocation = asyncHandler(async (req, res) =>
+  createListingSearchCityHandler(req, res, {
+    kind: 'property',
+    responseKey: 'propertyLocation',
+    label: 'property location',
+  })
+);
+
+/**
+ * @swagger
+ * /master-data/property-locations/{id}:
+ *   put:
+ *     summary: Update property search city display name
+ *     tags: [Admin - Master Data - Property Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               displayName:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Property location updated
+ */
+const updatePropertyLocation = asyncHandler(async (req, res) =>
+  updateListingSearchCityHandler(req, res, {
+    kind: 'property',
+    responseKey: 'propertyLocation',
+    label: 'property location',
+  })
+);
+
+/**
+ * @swagger
+ * /master-data/property-locations/{id}:
+ *   delete:
+ *     summary: Delete a property search city
+ *     description: Allowed only when propertyCount is 0 and projectCount is 0
+ *     tags: [Admin - Master Data - Property Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Deleted
+ *       400:
+ *         description: Location still linked to listings (IN_USE)
+ */
+const deletePropertyLocation = asyncHandler(async (req, res) =>
+  deleteListingSearchCityHandler(req, res, {
+    countField: 'propertyCount',
+    label: 'property location',
+  })
+);
+
+/**
+ * @swagger
+ * /master-data/project-locations:
+ *   get:
+ *     summary: List project search cities (ListingSearchCity index)
+ *     description: |
+ *       Same `ListingSearchCity` collection as property locations. `GET /master-data?types=projectlocations` returns rows with `projectCount > 0`.
+ *       Counts update when projects are published/updated.
+ *     tags: [Admin - Master Data - Project Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: linkedOnly
+ *         schema:
+ *           type: boolean
+ *         description: If true, only cities with projectCount > 0
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Project locations fetched (projectLocations, pagination, counts)
+ */
+const listProjectLocations = asyncHandler(async (req, res) =>
+  listListingSearchCitiesHandler(req, res, {
+    kind: 'project',
+    countField: 'projectCount',
+    responseKey: 'projectLocations',
+    label: 'project locations',
+  })
+);
+
+/**
+ * @swagger
+ * /master-data/project-locations:
+ *   post:
+ *     summary: Create a project search city
+ *     tags: [Admin - Master Data - Project Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - displayName
+ *             properties:
+ *               displayName:
+ *                 type: string
+ *                 example: Abu Dhabi
+ *     responses:
+ *       201:
+ *         description: Project location created
+ */
+const createProjectLocation = asyncHandler(async (req, res) =>
+  createListingSearchCityHandler(req, res, {
+    kind: 'project',
+    responseKey: 'projectLocation',
+    label: 'project location',
+  })
+);
+
+/**
+ * @swagger
+ * /master-data/project-locations/{id}:
+ *   put:
+ *     summary: Update project search city display name
+ *     tags: [Admin - Master Data - Project Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Project location updated
+ */
+const updateProjectLocation = asyncHandler(async (req, res) =>
+  updateListingSearchCityHandler(req, res, {
+    kind: 'project',
+    responseKey: 'projectLocation',
+    label: 'project location',
+  })
+);
+
+/**
+ * @swagger
+ * /master-data/project-locations/{id}:
+ *   delete:
+ *     summary: Delete a project search city
+ *     description: Allowed only when projectCount is 0 and propertyCount is 0
+ *     tags: [Admin - Master Data - Project Locations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Deleted
+ */
+const deleteProjectLocation = asyncHandler(async (req, res) =>
+  deleteListingSearchCityHandler(req, res, {
+    countField: 'projectCount',
+    label: 'project location',
+  })
+);
+
 module.exports = {
   getMasterData,
   listJobTitles,
@@ -1825,4 +2796,16 @@ module.exports = {
   createLanguage,
   updateLanguage,
   deleteLanguage,
+  listCountries,
+  createCountry,
+  updateCountry,
+  deleteCountry,
+  listPropertyLocations,
+  createPropertyLocation,
+  updatePropertyLocation,
+  deletePropertyLocation,
+  listProjectLocations,
+  createProjectLocation,
+  updateProjectLocation,
+  deleteProjectLocation,
 };
