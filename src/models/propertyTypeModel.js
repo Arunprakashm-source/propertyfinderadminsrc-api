@@ -18,11 +18,11 @@ const propertyTypeSchema = new Schema({
     icon: String,
     image: String,
     description: { type: String, maxlength: 500 },
-    // Category
     category: {
         type: String,
-        enum: ['residential', 'commercial', 'land', 'other'],
-        default: 'residential'
+        trim: true,
+        maxlength: 100,
+        default: 'others'
     },
     // Display
     isActive: { type: Boolean, default: true },

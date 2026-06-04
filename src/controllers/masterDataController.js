@@ -7,8 +7,13 @@ const Amenities = require('../models/amenitiesModel');
 const PropertyType = require('../models/propertyTypeModel');
 const ListingType = require('../models/listingTypeModel');
 const JobTitles = require('../models/jobTitlesModel');
+const Languages = require('../models/languagesModel');
 const Agent = require('../models/agentsModel');
 const Properties = require('../models/propertiesModal');
+const Newprojects = require('../models/newprojectsModel');
+const ProjectLayout = require('../models/projectLayoutModel');
+const ProjectUnit = require('../models/projectUnitModel');
+const ProjectBuilding = require('../models/projectBuildingModel');
 const {
   AGENT_TYPE_OPTIONS,
   AGENT_EXPERIENCE_OPTIONS,
@@ -38,6 +43,152 @@ const countAmenityStats = async () => {
     Amenities.countDocuments({ isActive: false }),
   ]);
   return { total, active, inactive };
+};
+
+const countPropertyTypeStats = async () => {
+  const [total, active, inactive] = await Promise.all([
+    PropertyType.countDocuments({}),
+    PropertyType.countDocuments({ isActive: true }),
+    PropertyType.countDocuments({ isActive: false }),
+  ]);
+  return { total, active, inactive };
+};
+
+const countListingTypeStats = async () => {
+  const [total, active, inactive] = await Promise.all([
+    ListingType.countDocuments({}),
+    ListingType.countDocuments({ isActive: true }),
+    ListingType.countDocuments({ isActive: false }),
+  ]);
+  return { total, active, inactive };
+};
+
+const countLanguageStats = async () => {
+  const [total, active, inactive] = await Promise.all([
+    Languages.countDocuments({}),
+    Languages.countDocuments({ isActive: true }),
+    Languages.countDocuments({ isActive: false }),
+  ]);
+  return { total, active, inactive };
+};
+
+const parseLanguageBody = (body = {}, { isCreate = false } = {}) => {
+  const data = {};
+
+  if (body.name !== undefined) {
+    data.name = String(body.name).trim();
+  }
+  if (body.code !== undefined) {
+    data.code = body.code ? String(body.code).trim().toLowerCase() : '';
+  }
+  if (body.nativeName !== undefined) {
+    data.nativeName = body.nativeName ? String(body.nativeName).trim() : '';
+  }
+  if (body.isActive !== undefined) {
+    data.isActive = parseBoolField(body.isActive);
+  }
+
+  if (isCreate && !data.name) {
+    return { error: 'Name is required' };
+  }
+  if (data.name && data.name.length > 120) {
+    return { error: 'Name must be 120 characters or less' };
+  }
+  if (data.code && data.code.length > 20) {
+    return { error: 'Code must be 20 characters or less' };
+  }
+  if (data.nativeName && data.nativeName.length > 100) {
+    return { error: 'Native name must be 100 characters or less' };
+  }
+
+  return { data };
+};
+
+const LISTING_TYPE_CATEGORIES = ['residential', 'commercial', 'other'];
+const LISTING_TYPE_TRANSACTIONS = ['buy', 'rent'];
+
+const parsePropertyTypeBody = (body = {}, { isCreate = false } = {}) => {
+  const data = {};
+
+  if (body.name !== undefined) {
+    data.name = String(body.name).trim();
+  }
+  if (body.category !== undefined) {
+    const category = String(body.category).trim();
+    if (category.length > 100) {
+      return { error: 'Category must be 100 characters or less' };
+    }
+    data.category = category;
+  }
+  if (body.description !== undefined) {
+    data.description = body.description ? String(body.description).trim() : '';
+  }
+  if (body.isActive !== undefined) {
+    data.isActive = parseBoolField(body.isActive);
+  }
+  if (body.displayOrder !== undefined && body.displayOrder !== '') {
+    const order = parseInt(body.displayOrder, 10);
+    if (Number.isNaN(order) || order < 0) {
+      return { error: 'displayOrder must be a non-negative integer' };
+    }
+    data.displayOrder = order;
+  }
+
+  if (isCreate && !data.name) {
+    return { error: 'Name is required' };
+  }
+
+  return { data };
+};
+
+const parseListingTypeBody = (body = {}, { isCreate = false } = {}) => {
+  const data = {};
+
+  if (body.name !== undefined) {
+    data.name = String(body.name).trim();
+  }
+  if (body.slug !== undefined && body.slug !== '') {
+    data.slug = String(body.slug).trim().toLowerCase();
+  }
+  if (body.transaction !== undefined && body.transaction !== '') {
+    const transaction = String(body.transaction).trim().toLowerCase();
+    if (!LISTING_TYPE_TRANSACTIONS.includes(transaction)) {
+      return { error: `transaction must be one of: ${LISTING_TYPE_TRANSACTIONS.join(', ')}` };
+    }
+    data.transaction = transaction;
+  }
+  if (body.category !== undefined && body.category !== '') {
+    const category = String(body.category).trim().toLowerCase();
+    if (!LISTING_TYPE_CATEGORIES.includes(category)) {
+      return { error: `category must be one of: ${LISTING_TYPE_CATEGORIES.join(', ')}` };
+    }
+    data.category = category;
+  }
+  if (body.description !== undefined) {
+    data.description = body.description ? String(body.description).trim() : '';
+  }
+  if (body.isActive !== undefined) {
+    data.isActive = parseBoolField(body.isActive);
+  }
+  if (body.displayOrder !== undefined && body.displayOrder !== '') {
+    const order = parseInt(body.displayOrder, 10);
+    if (Number.isNaN(order) || order < 0) {
+      return { error: 'displayOrder must be a non-negative integer' };
+    }
+    data.displayOrder = order;
+  }
+
+  if (isCreate) {
+    if (!data.name) return { error: 'Name is required' };
+    if (!data.transaction) return { error: 'Transaction is required (buy or rent)' };
+  }
+
+  return { data };
+};
+
+const nextDisplayOrder = async (Model) => {
+  const highest = await Model.findOne().sort({ displayOrder: -1 }).select('displayOrder').lean();
+  return highest ? (highest.displayOrder || 0) + 1 : 1;
 };
 
 const parseBoolField = (value) => value === true || value === 'true';
@@ -189,6 +340,13 @@ const getMasterData = asyncHandler(async (req, res) => {
         .sort({ title: 1 })
         .lean();
       data.jobTitles = jobTitles;
+    }
+
+    if (requestedTypes.includes('languages')) {
+      const languages = await Languages.find({ isActive: true })
+        .sort({ name: 1 })
+        .lean();
+      data.languages = languages;
     }
 
     if (requestedTypes.includes('agentexperience')) {
@@ -930,6 +1088,720 @@ const deleteAmenity = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * GET /master-data/property-types — list with filters and pagination.
+ */
+const listPropertyTypes = asyncHandler(async (req, res) => {
+  try {
+    const { search, isActive, page = 1, limit = 20 } = req.query;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
+
+    if (Number.isNaN(pageNum) || pageNum < 1) {
+      return failure(res, 400, 'Page must be a positive integer', 'VALIDATION_ERROR');
+    }
+    if (Number.isNaN(limitNum) || limitNum < 1) {
+      return failure(res, 400, 'Limit must be between 1 and 100', 'VALIDATION_ERROR');
+    }
+
+    const filter = {};
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
+      filter.$or = [{ name: rx }, { slug: rx }, { description: rx }, { category: rx }];
+    }
+    if (isActive !== undefined && isActive !== '') {
+      filter.isActive = parseBoolField(isActive);
+    }
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const [propertyTypes, filteredCount, counts] = await Promise.all([
+      PropertyType.find(filter)
+        .sort({ displayOrder: 1, name: 1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      PropertyType.countDocuments(filter),
+      countPropertyTypeStats(),
+    ]);
+
+    const totalPages = Math.ceil(filteredCount / limitNum) || 1;
+
+    return success(res, 'Property types fetched successfully', {
+      propertyTypes,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalPropertyTypes: filteredCount,
+        limit: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalPropertyTypes: counts.total,
+        activePropertyTypes: counts.active,
+        inactivePropertyTypes: counts.inactive,
+      },
+    });
+  } catch (error) {
+    logger.error('List property types failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch property types', 'SERVER_ERROR', error.message);
+  }
+});
+
+const createPropertyType = asyncHandler(async (req, res) => {
+  try {
+    const parsed = parsePropertyTypeBody(req.body, { isCreate: true });
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const { name, category, description, isActive, displayOrder } = parsed.data;
+    const finalSlug = generateSlug(name);
+
+    const existing = await PropertyType.findOne({
+      $or: [{ name: new RegExp(`^${escapeRegex(name)}$`, 'i') }, { slug: finalSlug }],
+    });
+    if (existing) {
+      if (existing.name.toLowerCase() === name.toLowerCase()) {
+        return failure(res, 409, 'Property type with this name already exists', 'DUPLICATE');
+      }
+      return failure(res, 409, 'Property type with this slug already exists', 'DUPLICATE');
+    }
+
+    const propertyType = await PropertyType.create({
+      name,
+      slug: finalSlug,
+      category: category ?? '',
+      description: description || undefined,
+      isActive: isActive !== undefined ? isActive : true,
+      displayOrder: displayOrder ?? (await nextDisplayOrder(PropertyType)),
+      totalListings: 0,
+    });
+
+    return success(res, 'Property type created successfully', { propertyType }, 201);
+  } catch (error) {
+    logger.error('Create property type failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Property type already exists', 'DUPLICATE');
+    }
+    if (error.name === 'ValidationError') {
+      return failure(res, 400, error.message, 'VALIDATION_ERROR');
+    }
+    return failure(res, 500, 'Failed to create property type', 'SERVER_ERROR', error.message);
+  }
+});
+
+const updatePropertyType = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid property type ID', 'VALIDATION_ERROR');
+    }
+
+    const propertyType = await PropertyType.findById(id);
+    if (!propertyType) {
+      return failure(res, 404, 'Property type not found', 'NOT_FOUND');
+    }
+
+    const parsed = parsePropertyTypeBody(req.body);
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const updateData = parsed.data;
+    if (!Object.keys(updateData).length) {
+      return failure(res, 400, 'At least one field must be provided for update', 'VALIDATION_ERROR');
+    }
+
+    if (updateData.name && updateData.name !== propertyType.name) {
+      updateData.slug = generateSlug(updateData.name);
+    }
+
+    if (updateData.name) {
+      const duplicateFilter = { _id: { $ne: id }, $or: [] };
+      if (updateData.name) {
+        duplicateFilter.$or.push({
+          name: new RegExp(`^${escapeRegex(updateData.name)}$`, 'i'),
+        });
+      }
+      if (updateData.slug) {
+        duplicateFilter.$or.push({ slug: updateData.slug });
+      }
+      if (duplicateFilter.$or.length) {
+        const existing = await PropertyType.findOne(duplicateFilter);
+        if (existing) {
+          return failure(res, 409, 'Property type with this name or slug already exists', 'DUPLICATE');
+        }
+      }
+    }
+
+    Object.assign(propertyType, updateData);
+    propertyType.updatedAt = new Date();
+    await propertyType.save();
+
+    return success(res, 'Property type updated successfully', { propertyType });
+  } catch (error) {
+    logger.error('Update property type failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Property type already exists', 'DUPLICATE');
+    }
+    if (error.name === 'ValidationError') {
+      return failure(res, 400, error.message, 'VALIDATION_ERROR');
+    }
+    return failure(res, 500, 'Failed to update property type', 'SERVER_ERROR', error.message);
+  }
+});
+
+const deletePropertyType = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid property type ID', 'VALIDATION_ERROR');
+    }
+
+    const propertyType = await PropertyType.findById(id);
+    if (!propertyType) {
+      return failure(res, 404, 'Property type not found', 'NOT_FOUND');
+    }
+
+    const [propertyCount, projectCount, layoutCount, unitCount, buildingCount] = await Promise.all([
+      Properties.countDocuments({ propertyType: id }),
+      Newprojects.countDocuments({ propertyTypes: id }),
+      ProjectLayout.countDocuments({ propertyType: id }),
+      ProjectUnit.countDocuments({ propertyType: id }),
+      ProjectBuilding.countDocuments({ propertyType: id }),
+    ]);
+
+    const inUse = propertyCount + projectCount + layoutCount + unitCount + buildingCount;
+    if (inUse > 0) {
+      return failure(
+        res,
+        400,
+        'Cannot delete property type that is in use. Deactivate it instead.',
+        'IN_USE'
+      );
+    }
+
+    await PropertyType.findByIdAndDelete(id);
+    return success(res, 'Property type deleted successfully', {});
+  } catch (error) {
+    logger.error('Delete property type failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to delete property type', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * GET /master-data/listing-types — list with filters and pagination.
+ */
+const listListingTypes = asyncHandler(async (req, res) => {
+  try {
+    const { search, category, transaction, isActive, page = 1, limit = 20 } = req.query;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
+
+    if (Number.isNaN(pageNum) || pageNum < 1) {
+      return failure(res, 400, 'Page must be a positive integer', 'VALIDATION_ERROR');
+    }
+    if (Number.isNaN(limitNum) || limitNum < 1) {
+      return failure(res, 400, 'Limit must be between 1 and 100', 'VALIDATION_ERROR');
+    }
+
+    const filter = {};
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
+      filter.$or = [{ name: rx }, { slug: rx }, { description: rx }];
+    }
+    if (category) {
+      filter.category = String(category).trim().toLowerCase();
+    }
+    if (transaction) {
+      filter.transaction = String(transaction).trim().toLowerCase();
+    }
+    if (isActive !== undefined && isActive !== '') {
+      filter.isActive = parseBoolField(isActive);
+    }
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const [listingTypes, filteredCount, counts] = await Promise.all([
+      ListingType.find(filter)
+        .sort({ displayOrder: 1, name: 1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      ListingType.countDocuments(filter),
+      countListingTypeStats(),
+    ]);
+
+    const totalPages = Math.ceil(filteredCount / limitNum) || 1;
+
+    return success(res, 'Listing types fetched successfully', {
+      listingTypes,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalListingTypes: filteredCount,
+        limit: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalListingTypes: counts.total,
+        activeListingTypes: counts.active,
+        inactiveListingTypes: counts.inactive,
+      },
+    });
+  } catch (error) {
+    logger.error('List listing types failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch listing types', 'SERVER_ERROR', error.message);
+  }
+});
+
+const createListingType = asyncHandler(async (req, res) => {
+  try {
+    const parsed = parseListingTypeBody(req.body, { isCreate: true });
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const { name, slug, transaction, category, description, isActive, displayOrder } = parsed.data;
+    let finalSlug = slug || generateSlug(name);
+
+    const existing = await ListingType.findOne({
+      $or: [{ name: new RegExp(`^${escapeRegex(name)}$`, 'i') }, { slug: finalSlug }],
+    });
+    if (existing) {
+      if (existing.name.toLowerCase() === name.toLowerCase()) {
+        return failure(res, 409, 'Listing type with this name already exists', 'DUPLICATE');
+      }
+      return failure(res, 409, 'Listing type with this slug already exists', 'DUPLICATE');
+    }
+
+    const listingType = await ListingType.create({
+      name,
+      slug: finalSlug,
+      transaction,
+      category: category || 'residential',
+      description: description || undefined,
+      isActive: isActive !== undefined ? isActive : true,
+      displayOrder: displayOrder ?? (await nextDisplayOrder(ListingType)),
+    });
+
+    return success(res, 'Listing type created successfully', { listingType }, 201);
+  } catch (error) {
+    logger.error('Create listing type failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Listing type already exists', 'DUPLICATE');
+    }
+    if (error.name === 'ValidationError') {
+      return failure(res, 400, error.message, 'VALIDATION_ERROR');
+    }
+    return failure(res, 500, 'Failed to create listing type', 'SERVER_ERROR', error.message);
+  }
+});
+
+const updateListingType = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid listing type ID', 'VALIDATION_ERROR');
+    }
+
+    const listingType = await ListingType.findById(id);
+    if (!listingType) {
+      return failure(res, 404, 'Listing type not found', 'NOT_FOUND');
+    }
+
+    const parsed = parseListingTypeBody(req.body);
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const updateData = parsed.data;
+    if (!Object.keys(updateData).length) {
+      return failure(res, 400, 'At least one field must be provided for update', 'VALIDATION_ERROR');
+    }
+
+    if (updateData.name && !updateData.slug && updateData.name !== listingType.name) {
+      updateData.slug = generateSlug(updateData.name);
+    }
+
+    if (updateData.name || updateData.slug) {
+      const duplicateFilter = { _id: { $ne: id }, $or: [] };
+      if (updateData.name) {
+        duplicateFilter.$or.push({
+          name: new RegExp(`^${escapeRegex(updateData.name)}$`, 'i'),
+        });
+      }
+      if (updateData.slug) {
+        duplicateFilter.$or.push({ slug: updateData.slug });
+      }
+      if (duplicateFilter.$or.length) {
+        const existing = await ListingType.findOne(duplicateFilter);
+        if (existing) {
+          return failure(res, 409, 'Listing type with this name or slug already exists', 'DUPLICATE');
+        }
+      }
+    }
+
+    Object.assign(listingType, updateData);
+    listingType.updatedAt = new Date();
+    await listingType.save();
+
+    return success(res, 'Listing type updated successfully', { listingType });
+  } catch (error) {
+    logger.error('Update listing type failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Listing type already exists', 'DUPLICATE');
+    }
+    if (error.name === 'ValidationError') {
+      return failure(res, 400, error.message, 'VALIDATION_ERROR');
+    }
+    return failure(res, 500, 'Failed to update listing type', 'SERVER_ERROR', error.message);
+  }
+});
+
+const deleteListingType = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid listing type ID', 'VALIDATION_ERROR');
+    }
+
+    const listingType = await ListingType.findById(id);
+    if (!listingType) {
+      return failure(res, 404, 'Listing type not found', 'NOT_FOUND');
+    }
+
+    const propertyCount = await Properties.countDocuments({ listingType: id });
+    if (propertyCount > 0) {
+      return failure(
+        res,
+        400,
+        'Cannot delete listing type that is in use by properties. Deactivate it instead.',
+        'IN_USE'
+      );
+    }
+
+    await ListingType.findByIdAndDelete(id);
+    return success(res, 'Listing type deleted successfully', {});
+  } catch (error) {
+    logger.error('Delete listing type failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to delete listing type', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
+ * /master-data/languages:
+ *   get:
+ *     summary: List languages with filters, pagination, and stat counts
+ *     tags: [Admin - Master Data - Languages]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Search in name, code, or native name (case-insensitive)
+ *       - in: query
+ *         name: isActive
+ *         schema:
+ *           type: boolean
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *           maximum: 100
+ *     responses:
+ *       200:
+ *         description: Languages fetched successfully
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+const listLanguages = asyncHandler(async (req, res) => {
+  try {
+    const { search, isActive, page = 1, limit = 20 } = req.query;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
+
+    if (Number.isNaN(pageNum) || pageNum < 1) {
+      return failure(res, 400, 'Page must be a positive integer', 'VALIDATION_ERROR');
+    }
+    if (Number.isNaN(limitNum) || limitNum < 1) {
+      return failure(res, 400, 'Limit must be between 1 and 100', 'VALIDATION_ERROR');
+    }
+
+    const filter = {};
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
+      filter.$or = [{ name: rx }, { code: rx }, { nativeName: rx }];
+    }
+    if (isActive !== undefined && isActive !== '') {
+      filter.isActive = parseBoolField(isActive);
+    }
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const [languages, filteredCount, counts] = await Promise.all([
+      Languages.find(filter).sort({ name: 1 }).skip(skip).limit(limitNum).lean(),
+      Languages.countDocuments(filter),
+      countLanguageStats(),
+    ]);
+
+    const totalPages = Math.ceil(filteredCount / limitNum) || 1;
+
+    return success(res, 'Languages fetched successfully', {
+      languages,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalLanguages: filteredCount,
+        limit: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalLanguages: counts.total,
+        activeLanguages: counts.active,
+        inactiveLanguages: counts.inactive,
+      },
+    });
+  } catch (error) {
+    logger.error('List languages failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch languages', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
+ * /master-data/languages:
+ *   post:
+ *     summary: Create a language
+ *     tags: [Admin - Master Data - Languages]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: English
+ *               code:
+ *                 type: string
+ *                 example: en
+ *               nativeName:
+ *                 type: string
+ *                 example: English
+ *               isActive:
+ *                 type: boolean
+ *                 default: true
+ *     responses:
+ *       201:
+ *         description: Language created successfully
+ *       400:
+ *         description: Validation error
+ *       409:
+ *         description: Duplicate name or code
+ */
+const createLanguage = asyncHandler(async (req, res) => {
+  try {
+    const parsed = parseLanguageBody(req.body, { isCreate: true });
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const { name, code, nativeName, isActive } = parsed.data;
+
+    const duplicateFilter = [{ name: new RegExp(`^${escapeRegex(name)}$`, 'i') }];
+    if (code) {
+      duplicateFilter.push({ code: new RegExp(`^${escapeRegex(code)}$`, 'i') });
+    }
+    const existing = await Languages.findOne({ $or: duplicateFilter });
+    if (existing) {
+      if (existing.name.toLowerCase() === name.toLowerCase()) {
+        return failure(res, 409, 'Language with this name already exists', 'DUPLICATE');
+      }
+      return failure(res, 409, 'Language with this code already exists', 'DUPLICATE');
+    }
+
+    const language = await Languages.create({
+      name,
+      code: code || undefined,
+      nativeName: nativeName || undefined,
+      isActive: isActive !== undefined ? isActive : true,
+    });
+
+    return success(res, 'Language created successfully', { language }, 201);
+  } catch (error) {
+    logger.error('Create language failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Language already exists', 'DUPLICATE');
+    }
+    return failure(res, 500, 'Failed to create language', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
+ * /master-data/languages/{id}:
+ *   put:
+ *     summary: Update a language
+ *     tags: [Admin - Master Data - Languages]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               code:
+ *                 type: string
+ *               nativeName:
+ *                 type: string
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Language updated successfully
+ *       404:
+ *         description: Language not found
+ */
+const updateLanguage = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid language ID', 'VALIDATION_ERROR');
+    }
+
+    const language = await Languages.findById(id);
+    if (!language) {
+      return failure(res, 404, 'Language not found', 'NOT_FOUND');
+    }
+
+    const parsed = parseLanguageBody(req.body);
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const updateData = parsed.data;
+    if (!Object.keys(updateData).length) {
+      return failure(res, 400, 'At least one field must be provided for update', 'VALIDATION_ERROR');
+    }
+
+    if (updateData.name) {
+      const nameTaken = await Languages.findOne({
+        _id: { $ne: id },
+        name: new RegExp(`^${escapeRegex(updateData.name)}$`, 'i'),
+      });
+      if (nameTaken) {
+        return failure(res, 409, 'Language with this name already exists', 'DUPLICATE');
+      }
+    }
+
+    if (updateData.code) {
+      const codeTaken = await Languages.findOne({
+        _id: { $ne: id },
+        code: new RegExp(`^${escapeRegex(updateData.code)}$`, 'i'),
+      });
+      if (codeTaken) {
+        return failure(res, 409, 'Language with this code already exists', 'DUPLICATE');
+      }
+    }
+
+    Object.assign(language, updateData);
+    await language.save();
+
+    return success(res, 'Language updated successfully', { language });
+  } catch (error) {
+    logger.error('Update language failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Language already exists', 'DUPLICATE');
+    }
+    return failure(res, 500, 'Failed to update language', 'SERVER_ERROR', error.message);
+  }
+});
+
+/**
+ * @swagger
+ * /master-data/languages/{id}:
+ *   delete:
+ *     summary: Delete a language
+ *     tags: [Admin - Master Data - Languages]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Language deleted successfully
+ *       400:
+ *         description: Language assigned to agents
+ *       404:
+ *         description: Language not found
+ */
+const deleteLanguage = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid language ID', 'VALIDATION_ERROR');
+    }
+
+    const language = await Languages.findById(id);
+    if (!language) {
+      return failure(res, 404, 'Language not found', 'NOT_FOUND');
+    }
+
+    const agentCount = await Agent.countDocuments({ languages: id });
+    if (agentCount > 0) {
+      return failure(
+        res,
+        400,
+        'Cannot delete language assigned to agents. Deactivate it or remove from agent profiles first.',
+        'IN_USE'
+      );
+    }
+
+    await Languages.findByIdAndDelete(id);
+    return success(res, 'Language deleted successfully', {});
+  } catch (error) {
+    logger.error('Delete language failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to delete language', 'SERVER_ERROR', error.message);
+  }
+});
+
 module.exports = {
   getMasterData,
   listJobTitles,
@@ -941,4 +1813,16 @@ module.exports = {
   createAmenity,
   updateAmenity,
   deleteAmenity,
+  listPropertyTypes,
+  createPropertyType,
+  updatePropertyType,
+  deletePropertyType,
+  listListingTypes,
+  createListingType,
+  updateListingType,
+  deleteListingType,
+  listLanguages,
+  createLanguage,
+  updateLanguage,
+  deleteLanguage,
 };

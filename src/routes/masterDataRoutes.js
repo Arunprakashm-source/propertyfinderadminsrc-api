@@ -12,6 +12,18 @@ const {
   createAmenity,
   updateAmenity,
   deleteAmenity,
+  listPropertyTypes,
+  createPropertyType,
+  updatePropertyType,
+  deletePropertyType,
+  listListingTypes,
+  createListingType,
+  updateListingType,
+  deleteListingType,
+  listLanguages,
+  createLanguage,
+  updateLanguage,
+  deleteLanguage,
 } = require('../controllers/masterDataController');
 const { authenticateAdmin } = require('../middlewares/auth');
 const { uploadSingleImage, multerErrorHandler } = require('../config/multer');
@@ -43,5 +55,23 @@ router.put(
   updateAmenity
 );
 router.delete('/amenities/:id', authenticateAdmin, deleteAmenity);
+
+// Property types management (admin)
+router.get('/property-types', authenticateAdmin, listPropertyTypes);
+router.post('/property-types', authenticateAdmin, createPropertyType);
+router.put('/property-types/:id', authenticateAdmin, updatePropertyType);
+router.delete('/property-types/:id', authenticateAdmin, deletePropertyType);
+
+// Listing types management (admin)
+router.get('/listing-types', authenticateAdmin, listListingTypes);
+router.post('/listing-types', authenticateAdmin, createListingType);
+router.put('/listing-types/:id', authenticateAdmin, updateListingType);
+router.delete('/listing-types/:id', authenticateAdmin, deleteListingType);
+
+// Languages management (admin)
+router.get('/languages', authenticateAdmin, listLanguages);
+router.post('/languages', authenticateAdmin, createLanguage);
+router.put('/languages/:id', authenticateAdmin, updateLanguage);
+router.delete('/languages/:id', authenticateAdmin, deleteLanguage);
 
 module.exports = router;
