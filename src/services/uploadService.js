@@ -713,6 +713,9 @@ uploadService.getProjectVideoUrl = (filename) => buildEntityMediaUrl('vid/projec
 /** Project document e.g. brochure (stored under doc/project/). */
 uploadService.getProjectDocumentUrl = (filename) => buildEntityMediaUrl('doc/project', filename);
 
+/** Amenity listing image (stored filename under img/amenities/). */
+uploadService.getAmenityImageUrl = (filename) => buildEntityMediaUrl('img/amenities', filename);
+
 /** Get full URL for developer logo / profile image. */
 uploadService.getDeveloperProfileImageUrl = (filename) => {
   if (!filename || typeof filename !== 'string') return null;

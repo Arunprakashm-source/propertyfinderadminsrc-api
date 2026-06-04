@@ -17,7 +17,7 @@ const amenitiesSchema = new Schema({
     },
     category: {
         type: String,
-        enum: ['basic', 'safety', 'outdoor', 'indoor', 'luxury', 'other'],
+        trim: true,
         default: 'basic'
     },
     icon: String,
