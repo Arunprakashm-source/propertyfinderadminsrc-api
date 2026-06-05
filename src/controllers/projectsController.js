@@ -401,6 +401,45 @@ const buildListFilter = async (query) => {
   return { filter };
 };
 
+const PROJECT_STATUS_SORT_VALUES = new Set(['active', 'inactive', 'sold', 'pending']);
+
+const buildProjectStatsQuery = (query) => {
+  const statsQuery = { ...query };
+  delete statsQuery.status;
+  const sortNorm = String(query.sortBy || '').trim().toLowerCase();
+  if (PROJECT_STATUS_SORT_VALUES.has(sortNorm)) {
+    delete statsQuery.sortBy;
+  }
+  return statsQuery;
+};
+
+const countProjectListStats = async (baseFilter = {}) => {
+  const common = { ...baseFilter };
+  delete common.isActive;
+  delete common.publishStatus;
+
+  const [totalProjects, activeProjects, inactiveProjects, soldProjects, pendingProjects] =
+    await Promise.all([
+      Newprojects.countDocuments(baseFilter),
+      Newprojects.countDocuments({ ...common, publishStatus: 'published', isActive: true }),
+      Newprojects.countDocuments({
+        ...common,
+        isActive: false,
+        publishStatus: { $ne: 'soldout' },
+      }),
+      Newprojects.countDocuments({ ...common, publishStatus: 'soldout' }),
+      Newprojects.countDocuments({ ...common, publishStatus: 'unpublished', isActive: true }),
+    ]);
+
+  return {
+    totalProjects,
+    activeProjects,
+    inactiveProjects,
+    soldProjects,
+    pendingProjects,
+  };
+};
+
 const buildListSort = (sortBy) => {
   const normalized = String(sortBy || '').trim().toLowerCase();
   if (normalized === 'oldest') return { createdAt: 1 };
@@ -480,7 +519,9 @@ const buildListSort = (sortBy) => {
  *           maximum: 100
  *     responses:
  *       200:
- *         description: Projects fetched successfully
+ *         description: |
+ *           Projects fetched successfully. Includes `counts` (total/active/inactive/sold/pending)
+ *           for the current filters excluding status/sortBy status.
  *       400:
  *         description: Validation error
  *       401:
@@ -509,7 +550,12 @@ const listProjects = asyncHandler(async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
     const sort = buildListSort(sortBy);
 
-    const [projects, total] = await Promise.all([
+    const statsFilterResult = await buildListFilter(buildProjectStatsQuery(req.query));
+    if (statsFilterResult.error) {
+      return failure(res, 400, statsFilterResult.error, statsFilterResult.code);
+    }
+
+    const [projects, total, counts] = await Promise.all([
       Newprojects.find(filterResult.filter)
         .sort(sort)
         .skip(skip)
@@ -518,6 +564,7 @@ const listProjects = asyncHandler(async (req, res) => {
         .populate('authorizedAgencies', 'agencyName email profilePicture')
         .lean(),
       Newprojects.countDocuments(filterResult.filter),
+      countProjectListStats(statsFilterResult.filter),
     ]);
 
     const totalPages = Math.ceil(total / limitNum) || 1;
@@ -532,6 +579,7 @@ const listProjects = asyncHandler(async (req, res) => {
         hasNextPage: pageNum < totalPages,
         hasPrevPage: pageNum > 1,
       },
+      counts,
     });
   } catch (error) {
     logger.error('List projects failed', { error: error.message, stack: error.stack });

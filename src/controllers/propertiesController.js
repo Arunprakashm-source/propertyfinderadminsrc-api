@@ -282,7 +282,29 @@ const buildListSort = (sortByRaw) => {
   if (sortBy === 'price-asc' || sortBy === 'price-low') return { price: 1 };
   if (sortBy === 'price-desc' || sortBy === 'price-high') return { price: -1 };
   if (sortBy === 'featured') return { isFeatured: -1, createdAt: -1 };
+  if (PROPERTY_STATUSES.has(sortBy)) return { createdAt: -1 };
   return { createdAt: -1 };
+};
+
+const countPropertyListStats = async (baseFilter = {}) => {
+  const [totalProperties, activeProperties, inactiveProperties, soldProperties, rentedProperties, pendingProperties] =
+    await Promise.all([
+      Properties.countDocuments(baseFilter),
+      Properties.countDocuments({ ...baseFilter, status: 'active' }),
+      Properties.countDocuments({ ...baseFilter, status: 'inactive' }),
+      Properties.countDocuments({ ...baseFilter, status: 'sold' }),
+      Properties.countDocuments({ ...baseFilter, status: 'rented' }),
+      Properties.countDocuments({ ...baseFilter, status: 'pending' }),
+    ]);
+
+  return {
+    totalProperties,
+    activeProperties,
+    inactiveProperties,
+    soldProperties,
+    rentedProperties,
+    pendingProperties,
+  };
 };
 
 const normalizePropertyListTransaction = (raw) => {
@@ -355,6 +377,7 @@ const buildListFilter = async (query) => {
     tab,
     propertyType,
     status,
+    sortBy,
     city,
     isFeatured,
     isVerified,
@@ -394,12 +417,19 @@ const buildListFilter = async (query) => {
     filter.propertyType = new Types.ObjectId(propertyType);
   }
 
-  if (status) {
-    const normalized = String(status).toLowerCase().trim();
-    if (!PROPERTY_STATUSES.has(normalized)) {
+  const normalizedStatus = String(status || '')
+    .trim()
+    .toLowerCase();
+  const statusFromSort = PROPERTY_STATUSES.has(String(sortBy || '').trim().toLowerCase())
+    ? String(sortBy).trim().toLowerCase()
+    : null;
+  const effectiveStatus = normalizedStatus || statusFromSort;
+
+  if (effectiveStatus) {
+    if (!PROPERTY_STATUSES.has(effectiveStatus)) {
       return { error: 'Invalid status', code: 'VALIDATION_ERROR' };
     }
-    filter.status = normalized;
+    filter.status = effectiveStatus;
   }
 
   if (city && String(city).trim()) {
@@ -560,8 +590,9 @@ const deletePropertyMediaFiles = async (property) => {
  *         name: sortBy
  *         schema:
  *           type: string
- *           enum: [newest, oldest, price-asc, price-desc]
+ *           enum: [newest, oldest, active, inactive, sold, rented, pending, price-asc, price-desc]
  *           default: newest
+ *         description: Sort order, or filter by status when value is active/inactive/sold/rented/pending
  *       - in: query
  *         name: page
  *         schema:
@@ -602,7 +633,10 @@ const listProperties = asyncHandler(async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
     const sort = buildListSort(sortBy);
 
-    const [properties, total] = await Promise.all([
+    const statsFilter = { ...filterResult.filter };
+    delete statsFilter.status;
+
+    const [properties, total, counts] = await Promise.all([
       Properties.find(filterResult.filter)
         .sort(sort)
         .skip(skip)
@@ -610,6 +644,7 @@ const listProperties = asyncHandler(async (req, res) => {
         .populate(PROPERTY_LIST_POPULATE)
         .lean(),
       Properties.countDocuments(filterResult.filter),
+      countPropertyListStats(statsFilter),
     ]);
 
     const enriched = await attachAgencyDetails(properties);
@@ -625,6 +660,7 @@ const listProperties = asyncHandler(async (req, res) => {
         hasNextPage: pageNum < totalPages,
         hasPrevPage: pageNum > 1,
       },
+      counts,
     });
   } catch (error) {
     logger.error('List properties failed', { error: error.message, stack: error.stack });
