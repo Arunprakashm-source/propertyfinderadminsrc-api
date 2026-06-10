@@ -8,6 +8,8 @@ const PropertyType = require('../models/propertyTypeModel');
 const ListingType = require('../models/listingTypeModel');
 const JobTitles = require('../models/jobTitlesModel');
 const Languages = require('../models/languagesModel');
+const BlogCategory = require('../models/blogCategoryModel');
+const BlogPost = require('../models/blogPostModel');
 const Agent = require('../models/agentsModel');
 const Users = require('../models/usersModel');
 const Agencies = require('../models/agenciesModel');
@@ -79,6 +81,105 @@ const countLanguageStats = async () => {
     Languages.countDocuments({ isActive: false }),
   ]);
   return { total, active, inactive };
+};
+
+const countBlogCategoryStats = async () => {
+  const [total, active, inactive] = await Promise.all([
+    BlogCategory.countDocuments({}),
+    BlogCategory.countDocuments({ isActive: true }),
+    BlogCategory.countDocuments({ isActive: false }),
+  ]);
+  return { total, active, inactive };
+};
+
+const parseBlogSubcategories = (raw) => {
+  if (raw === undefined) return { subcategories: undefined };
+  if (!Array.isArray(raw)) {
+    return { error: 'subcategories must be an array' };
+  }
+
+  const seenSlugs = new Set();
+  const subcategories = [];
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const item = raw[i] || {};
+    const name = String(item.name || '').trim();
+    if (!name) {
+      return { error: `Subcategory ${i + 1}: name is required` };
+    }
+    if (name.length > 120) {
+      return { error: `Subcategory ${i + 1}: name must be 120 characters or less` };
+    }
+
+    const slug = item.slug
+      ? String(item.slug).trim().toLowerCase()
+      : generateSlug(name);
+    if (!slug) {
+      return { error: `Subcategory ${i + 1}: could not generate slug` };
+    }
+    if (seenSlugs.has(slug)) {
+      return { error: `Duplicate subcategory slug: ${slug}` };
+    }
+    seenSlugs.add(slug);
+
+    let displayOrder = i;
+    if (item.displayOrder !== undefined && item.displayOrder !== '') {
+      const order = parseInt(item.displayOrder, 10);
+      if (Number.isNaN(order) || order < 0) {
+        return { error: `Subcategory ${i + 1}: displayOrder must be a non-negative integer` };
+      }
+      displayOrder = order;
+    }
+
+    const sub = { name, slug, displayOrder };
+    if (item._id && Types.ObjectId.isValid(item._id)) {
+      sub._id = item._id;
+    }
+    subcategories.push(sub);
+  }
+
+  return { subcategories };
+};
+
+const parseBlogCategoryBody = (body = {}, { isCreate = false } = {}) => {
+  const data = {};
+
+  if (body.name !== undefined) {
+    data.name = String(body.name).trim();
+  }
+  if (body.slug !== undefined && body.slug !== '') {
+    data.slug = String(body.slug).trim().toLowerCase();
+  }
+  if (body.isActive !== undefined) {
+    data.isActive = parseBoolField(body.isActive);
+  }
+  if (body.displayOrder !== undefined && body.displayOrder !== '') {
+    const order = parseInt(body.displayOrder, 10);
+    if (Number.isNaN(order) || order < 0) {
+      return { error: 'displayOrder must be a non-negative integer' };
+    }
+    data.displayOrder = order;
+  }
+
+  const subParsed = parseBlogSubcategories(body.subcategories);
+  if (subParsed.error) {
+    return { error: subParsed.error };
+  }
+  if (subParsed.subcategories !== undefined) {
+    data.subcategories = subParsed.subcategories;
+  }
+
+  if (isCreate && !data.name) {
+    return { error: 'Name is required' };
+  }
+  if (data.name && data.name.length > 120) {
+    return { error: 'Name must be 120 characters or less' };
+  }
+  if (data.slug && data.slug.length > 120) {
+    return { error: 'Slug must be 120 characters or less' };
+  }
+
+  return { data };
 };
 
 const countCountryStats = async () => {
@@ -557,6 +658,11 @@ const getMasterData = asyncHandler(async (req, res) => {
           img: 'https://d1dp1oh0ra5b0z.cloudfront.net/img/developer/',
           vid: 'https://d1dp1oh0ra5b0z.cloudfront.net/vid/developer/',
           doc: 'https://d1dp1oh0ra5b0z.cloudfront.net/doc/developer/',
+        },
+        blogUrl: {
+          img: 'https://d1dp1oh0ra5b0z.cloudfront.net/img/blog/',
+          vid: 'https://d1dp1oh0ra5b0z.cloudfront.net/vid/blog/',
+          doc: 'https://d1dp1oh0ra5b0z.cloudfront.net/doc/blog/',
         },
         userUrl: {
           img: 'https://d1dp1oh0ra5b0z.cloudfront.net/img/user/',
@@ -2773,6 +2879,205 @@ const deleteProjectLocation = asyncHandler(async (req, res) =>
   })
 );
 
+const listBlogCategories = asyncHandler(async (req, res) => {
+  try {
+    const { search, isActive, page = 1, limit = 20 } = req.query;
+
+    const pageNum = parseInt(page, 10);
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 100);
+
+    if (Number.isNaN(pageNum) || pageNum < 1) {
+      return failure(res, 400, 'Page must be a positive integer', 'VALIDATION_ERROR');
+    }
+    if (Number.isNaN(limitNum) || limitNum < 1) {
+      return failure(res, 400, 'Limit must be between 1 and 100', 'VALIDATION_ERROR');
+    }
+
+    const filter = {};
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
+      filter.$or = [{ name: rx }, { slug: rx }, { 'subcategories.name': rx }, { 'subcategories.slug': rx }];
+    }
+    if (isActive !== undefined && isActive !== '') {
+      filter.isActive = parseBoolField(isActive);
+    }
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const [categories, filteredCount, counts] = await Promise.all([
+      BlogCategory.find(filter)
+        .sort({ displayOrder: 1, name: 1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      BlogCategory.countDocuments(filter),
+      countBlogCategoryStats(),
+    ]);
+
+    const totalPages = Math.ceil(filteredCount / limitNum) || 1;
+
+    return success(res, 'Blog categories fetched successfully', {
+      categories,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalBlogCategories: filteredCount,
+        limit: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      counts: {
+        totalBlogCategories: counts.total,
+        activeBlogCategories: counts.active,
+        inactiveBlogCategories: counts.inactive,
+      },
+    });
+  } catch (error) {
+    logger.error('List blog categories failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch blog categories', 'SERVER_ERROR', error.message);
+  }
+});
+
+const createBlogCategory = asyncHandler(async (req, res) => {
+  try {
+    const parsed = parseBlogCategoryBody(req.body, { isCreate: true });
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const { name, slug, isActive, displayOrder, subcategories } = parsed.data;
+    const finalSlug = slug || generateSlug(name);
+
+    const existing = await BlogCategory.findOne({
+      $or: [{ name: new RegExp(`^${escapeRegex(name)}$`, 'i') }, { slug: finalSlug }],
+    });
+    if (existing) {
+      if (existing.name.toLowerCase() === name.toLowerCase()) {
+        return failure(res, 409, 'Blog category with this name already exists', 'DUPLICATE');
+      }
+      return failure(res, 409, 'Blog category with this slug already exists', 'DUPLICATE');
+    }
+
+    const order =
+      displayOrder !== undefined ? displayOrder : await nextDisplayOrder(BlogCategory);
+
+    const category = await BlogCategory.create({
+      name,
+      slug: finalSlug,
+      subcategories: subcategories || [],
+      displayOrder: order,
+      isActive: isActive !== undefined ? isActive : true,
+    });
+
+    return success(res, 'Blog category created successfully', { category }, 201);
+  } catch (error) {
+    logger.error('Create blog category failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Blog category already exists', 'DUPLICATE');
+    }
+    return failure(res, 500, 'Failed to create blog category', 'SERVER_ERROR', error.message);
+  }
+});
+
+const updateBlogCategory = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid blog category ID', 'VALIDATION_ERROR');
+    }
+
+    const category = await BlogCategory.findById(id);
+    if (!category) {
+      return failure(res, 404, 'Blog category not found', 'NOT_FOUND');
+    }
+
+    const parsed = parseBlogCategoryBody(req.body);
+    if (parsed.error) {
+      return failure(res, 400, parsed.error, 'VALIDATION_ERROR');
+    }
+
+    const updateData = parsed.data;
+    if (!Object.keys(updateData).length) {
+      return failure(res, 400, 'At least one field must be provided for update', 'VALIDATION_ERROR');
+    }
+
+    const previousSlug = category.slug;
+
+    if (updateData.name && !updateData.slug) {
+      updateData.slug = generateSlug(updateData.name);
+    }
+
+    if (updateData.name) {
+      const nameTaken = await BlogCategory.findOne({
+        _id: { $ne: id },
+        name: new RegExp(`^${escapeRegex(updateData.name)}$`, 'i'),
+      });
+      if (nameTaken) {
+        return failure(res, 409, 'Blog category with this name already exists', 'DUPLICATE');
+      }
+    }
+
+    if (updateData.slug) {
+      const slugTaken = await BlogCategory.findOne({
+        _id: { $ne: id },
+        slug: updateData.slug,
+      });
+      if (slugTaken) {
+        return failure(res, 409, 'Blog category with this slug already exists', 'DUPLICATE');
+      }
+    }
+
+    Object.assign(category, updateData);
+    await category.save();
+
+    if (updateData.slug && updateData.slug !== previousSlug) {
+      await BlogPost.updateMany(
+        { categorySlug: previousSlug },
+        { $set: { categorySlug: updateData.slug } }
+      );
+    }
+
+    return success(res, 'Blog category updated successfully', { category });
+  } catch (error) {
+    logger.error('Update blog category failed', { error: error.message, stack: error.stack });
+    if (error.code === 11000) {
+      return failure(res, 409, 'Blog category already exists', 'DUPLICATE');
+    }
+    return failure(res, 500, 'Failed to update blog category', 'SERVER_ERROR', error.message);
+  }
+});
+
+const deleteBlogCategory = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) {
+      return failure(res, 400, 'Invalid blog category ID', 'VALIDATION_ERROR');
+    }
+
+    const category = await BlogCategory.findById(id);
+    if (!category) {
+      return failure(res, 404, 'Blog category not found', 'NOT_FOUND');
+    }
+
+    const postCount = await BlogPost.countDocuments({ categorySlug: category.slug });
+    if (postCount > 0) {
+      return failure(
+        res,
+        400,
+        'Cannot delete blog category used by blog posts. Deactivate it or reassign posts first.',
+        'IN_USE'
+      );
+    }
+
+    await category.deleteOne();
+
+    return success(res, 'Blog category deleted successfully');
+  } catch (error) {
+    logger.error('Delete blog category failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to delete blog category', 'SERVER_ERROR', error.message);
+  }
+});
+
 module.exports = {
   getMasterData,
   listJobTitles,
@@ -2808,4 +3113,8 @@ module.exports = {
   createProjectLocation,
   updateProjectLocation,
   deleteProjectLocation,
+  listBlogCategories,
+  createBlogCategory,
+  updateBlogCategory,
+  deleteBlogCategory,
 };

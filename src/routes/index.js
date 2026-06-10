@@ -10,6 +10,8 @@ const developersRoutes = require('./developersRoutes');
 const propertiesRoutes = require('./propertiesRoutes');
 const reportsRoutes = require('./reportsRoutes');
 const projectsRoutes = require('./projectsRoutes');
+const blogsRoutes = require('./blogsRoutes');
+const legalRoutes = require('./legalRoutes');
 
 // Auth routes 
 router.use('/auth', authRoutes);
@@ -31,7 +33,9 @@ router.use('/reports', reportsRoutes);
 
 router.use('/projects', projectsRoutes);
 
+router.use('/cms/blogs', blogsRoutes);
 
+router.use('/cms/legal', legalRoutes);
 
 module.exports = router;
 

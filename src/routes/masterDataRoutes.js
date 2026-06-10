@@ -36,6 +36,10 @@ const {
   createProjectLocation,
   updateProjectLocation,
   deleteProjectLocation,
+  listBlogCategories,
+  createBlogCategory,
+  updateBlogCategory,
+  deleteBlogCategory,
 } = require('../controllers/masterDataController');
 const { authenticateAdmin } = require('../middlewares/auth');
 const { uploadSingleImage, multerErrorHandler } = require('../config/multer');
@@ -103,5 +107,11 @@ router.get('/project-locations', authenticateAdmin, listProjectLocations);
 router.post('/project-locations', authenticateAdmin, createProjectLocation);
 router.put('/project-locations/:id', authenticateAdmin, updateProjectLocation);
 router.delete('/project-locations/:id', authenticateAdmin, deleteProjectLocation);
+
+// Blog categories (master data)
+router.get('/blog-categories', authenticateAdmin, listBlogCategories);
+router.post('/blog-categories', authenticateAdmin, createBlogCategory);
+router.put('/blog-categories/:id', authenticateAdmin, updateBlogCategory);
+router.delete('/blog-categories/:id', authenticateAdmin, deleteBlogCategory);
 
 module.exports = router;
