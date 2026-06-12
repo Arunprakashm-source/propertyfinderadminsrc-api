@@ -4,6 +4,18 @@ const Countries = require('../models/countriesModel');
 
 const LEGAL_SETTINGS_SLUG = 'legal-overview';
 
+const isPrivacyCategory = (doc) => {
+  const slug = String(doc.slug || '').toLowerCase();
+  const name = String(doc.categoryName || '').toLowerCase();
+  return slug === 'privacy-policy' || slug === 'privacy' || name.includes('privacy');
+};
+
+const resolveDocumentPageType = (doc) => {
+  const pageType = String(doc?.pageType || '').toLowerCase();
+  if (pageType === 'terms' || pageType === 'privacy') return pageType;
+  return isPrivacyCategory(doc) ? 'privacy' : 'terms';
+};
+
 const DEFAULT_LEGAL_SETTINGS = {
   termsPageTitle: 'Terms and conditions',
   privacyPageTitle: 'Privacy policy',
@@ -21,6 +33,7 @@ const mapLegalDocument = (doc) => {
   return {
     id: String(plain._id),
     countryCode: plain.countryCode,
+    pageType: resolveDocumentPageType(plain),
     categoryName: plain.categoryName || '',
     slug: plain.slug || '',
     content: plain.content || '',
@@ -91,6 +104,7 @@ const listDocuments = async ({ countryCode, activeOnly = false } = {}) => {
 module.exports = {
   LEGAL_SETTINGS_SLUG,
   DEFAULT_LEGAL_SETTINGS,
+  resolveDocumentPageType,
   mapLegalDocument,
   getLegalSettings,
   saveLegalSettings,

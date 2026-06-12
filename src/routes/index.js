@@ -12,6 +12,9 @@ const reportsRoutes = require('./reportsRoutes');
 const projectsRoutes = require('./projectsRoutes');
 const blogsRoutes = require('./blogsRoutes');
 const legalRoutes = require('./legalRoutes');
+const aboutRoutes = require('./aboutRoutes');
+const contactRoutes = require('./contactRoutes');
+const teamRoutes = require('./teamRoutes');
 
 // Auth routes 
 router.use('/auth', authRoutes);
@@ -36,6 +39,12 @@ router.use('/projects', projectsRoutes);
 router.use('/cms/blogs', blogsRoutes);
 
 router.use('/cms/legal', legalRoutes);
+
+router.use('/cms/about', aboutRoutes);
+
+router.use('/cms/contact', contactRoutes);
+
+router.use('/cms/team', teamRoutes);
 
 module.exports = router;
 

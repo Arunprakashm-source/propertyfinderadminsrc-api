@@ -37,9 +37,13 @@ const parseDocumentBody = (body = {}) => {
       ? parseInt(body.displayOrder, 10)
       : 0;
 
+  const pageTypeRaw = String(body.pageType || 'terms').trim().toLowerCase();
+  const pageType = pageTypeRaw === 'privacy' ? 'privacy' : 'terms';
+
   return {
     data: {
       countryCode,
+      pageType,
       categoryName,
       slug,
       content: String(body.content || ''),
@@ -107,7 +111,7 @@ const mutateLegalAdmin = asyncHandler(async (req, res) => {
         await doc.save();
       } else {
         doc = await LegalDocument.findOneAndUpdate(
-          { countryCode: data.countryCode, slug: data.slug },
+          { countryCode: data.countryCode, pageType: data.pageType, slug: data.slug },
           data,
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );

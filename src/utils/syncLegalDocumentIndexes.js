@@ -1,7 +1,7 @@
 const LegalDocument = require('../models/legalDocumentModel');
 const { logger } = require('./logger');
 
-const LEGACY_INDEX_FIELDS = new Set(['documentKey', 'language', 'pageType', 'tabLabel']);
+const LEGACY_INDEX_FIELDS = new Set(['documentKey', 'language', 'tabLabel']);
 
 const isStaleLegalIndex = (index) => {
   if (!index?.name || index.name === '_id_') return false;

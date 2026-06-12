@@ -669,6 +669,11 @@ const getMasterData = asyncHandler(async (req, res) => {
           vid: 'https://d1dp1oh0ra5b0z.cloudfront.net/vid/user/',
           doc: 'https://d1dp1oh0ra5b0z.cloudfront.net/doc/user/',
         },
+        teamUrl: {
+          img: 'https://d1dp1oh0ra5b0z.cloudfront.net/img/team/',
+          vid: 'https://d1dp1oh0ra5b0z.cloudfront.net/vid/team/',
+          doc: 'https://d1dp1oh0ra5b0z.cloudfront.net/doc/team/',
+        },
         amenityUrl: {
           img: 'https://d1dp1oh0ra5b0z.cloudfront.net/img/amenities/',
           vid: '',
