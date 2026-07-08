@@ -1,14 +1,14 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 
-const LegalDocument = require('../models/legalDocumentModel');
+const SitemapDocument = require('../models/sitemapDocumentModel');
 const {
-  getLegalSettings,
-  saveLegalSettings,
+  getSitemapSettings,
+  saveSitemapSettings,
   listActiveCountries,
   listDocuments,
-  mapLegalDocument,
-} = require('../services/legalService');
+  mapSitemapDocument,
+} = require('../services/sitemapService');
 const { success, failure, generateSlug } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
 
@@ -37,13 +37,9 @@ const parseDocumentBody = (body = {}) => {
       ? parseInt(body.displayOrder, 10)
       : 0;
 
-  const pageTypeRaw = String(body.pageType || 'terms').trim().toLowerCase();
-  const pageType = pageTypeRaw === 'privacy' ? 'privacy' : 'terms';
-
   return {
     data: {
       countryCode,
-      pageType,
       categoryName,
       slug,
       content: String(body.content || ''),
@@ -55,13 +51,11 @@ const parseDocumentBody = (body = {}) => {
 
 /**
  * @swagger
- * /cms/legal:
+ * /cms/sitemap:
  *   get:
- *     summary: Get Legal Pages CMS data
- *     description: >
- *       Returns legal page settings, active countries, and legal documents.
- *       Optionally filter documents by country code.
- *     tags: [CMS Legal]
+ *     summary: Get Sitemap CMS data
+ *     description: Returns sitemap settings, active countries, and sitemap documents.
+ *     tags: [CMS Sitemap]
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -69,25 +63,24 @@ const parseDocumentBody = (body = {}) => {
  *         name: countryCode
  *         schema:
  *           type: string
- *         description: ISO country code filter (e.g. AE)
  *     responses:
  *       200:
- *         description: Legal CMS data fetched successfully
+ *         description: Sitemap CMS data fetched successfully
  *       500:
  *         description: Server error
  */
-const getLegalAdmin = asyncHandler(async (req, res) => {
+const getSitemapAdmin = asyncHandler(async (req, res) => {
   try {
     const { countryCode } = req.query;
     const [settings, countries, documents] = await Promise.all([
-      getLegalSettings(),
+      getSitemapSettings(),
       listActiveCountries(),
       listDocuments({
         countryCode: countryCode ? String(countryCode).trim().toUpperCase() : undefined,
       }),
     ]);
 
-    return success(res, 'Legal CMS data fetched successfully', {
+    return success(res, 'Sitemap CMS data fetched successfully', {
       settings,
       countries: countries.map((c) => ({
         _id: c._id,
@@ -100,20 +93,19 @@ const getLegalAdmin = asyncHandler(async (req, res) => {
       documents,
     });
   } catch (error) {
-    logger.error('Get legal admin failed', { error: error.message, stack: error.stack });
-    return failure(res, 500, 'Failed to fetch legal CMS data', 'SERVER_ERROR', error.message);
+    logger.error('Get sitemap admin failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch sitemap CMS data', 'SERVER_ERROR', error.message);
   }
 });
 
 /**
  * @swagger
- * /cms/legal:
+ * /cms/sitemap:
  *   post:
- *     summary: Legal Pages CMS mutations
+ *     summary: Sitemap CMS mutations
  *     description: >
- *       Consolidated admin write endpoint.
  *       Supported actions: `save-settings`, `save-document`, `delete-document`.
- *     tags: [CMS Legal]
+ *     tags: [CMS Sitemap]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -127,49 +119,26 @@ const getLegalAdmin = asyncHandler(async (req, res) => {
  *               action:
  *                 type: string
  *                 enum: [save-settings, save-document, delete-document]
- *               settings:
- *                 type: object
- *                 description: Required for save-settings.
- *               documentId:
- *                 type: string
- *                 description: Required for delete-document; optional for save-document (update).
- *               countryCode:
- *                 type: string
- *                 description: ISO country code (default AE).
- *               pageType:
- *                 type: string
- *                 enum: [terms, privacy]
- *               categoryName:
- *                 type: string
- *                 description: Tab label / category name.
- *               slug:
- *                 type: string
- *               content:
- *                 type: string
- *               isActive:
- *                 type: boolean
- *               displayOrder:
- *                 type: integer
  *     responses:
  *       200:
- *         description: Settings saved, document saved, or document deleted
+ *         description: Mutation successful
  *       400:
  *         description: Validation error
  *       404:
- *         description: Legal document not found
+ *         description: Document not found
  *       409:
  *         description: Duplicate category for location
  *       500:
  *         description: Server error
  */
-const mutateLegalAdmin = asyncHandler(async (req, res) => {
+const mutateSitemapAdmin = asyncHandler(async (req, res) => {
   try {
     const action = String(req.body?.action || '').trim().toLowerCase();
     const adminId = req.admin?._id;
 
     if (action === 'save-settings') {
-      const settings = await saveLegalSettings(req.body.settings || {}, adminId);
-      return success(res, 'Legal settings saved successfully', { settings });
+      const settings = await saveSitemapSettings(req.body.settings || {}, adminId);
+      return success(res, 'Sitemap settings saved successfully', { settings });
     }
 
     if (action === 'save-document') {
@@ -183,22 +152,22 @@ const mutateLegalAdmin = asyncHandler(async (req, res) => {
       const docId = req.body.documentId || req.body.id;
 
       if (docId && Types.ObjectId.isValid(docId)) {
-        doc = await LegalDocument.findById(docId);
+        doc = await SitemapDocument.findById(docId);
         if (!doc) {
-          return failure(res, 404, 'Legal document not found', 'NOT_FOUND');
+          return failure(res, 404, 'Sitemap document not found', 'NOT_FOUND');
         }
         Object.assign(doc, data);
         await doc.save();
       } else {
-        doc = await LegalDocument.findOneAndUpdate(
-          { countryCode: data.countryCode, pageType: data.pageType, slug: data.slug },
+        doc = await SitemapDocument.findOneAndUpdate(
+          { countryCode: data.countryCode, slug: data.slug },
           data,
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
       }
 
-      return success(res, 'Legal document saved successfully', {
-        document: mapLegalDocument(doc),
+      return success(res, 'Sitemap document saved successfully', {
+        document: mapSitemapDocument(doc),
       });
     }
 
@@ -207,11 +176,11 @@ const mutateLegalAdmin = asyncHandler(async (req, res) => {
       if (!docId || !Types.ObjectId.isValid(docId)) {
         return failure(res, 400, 'documentId is required', 'VALIDATION_ERROR');
       }
-      const deleted = await LegalDocument.findByIdAndDelete(docId);
+      const deleted = await SitemapDocument.findByIdAndDelete(docId);
       if (!deleted) {
-        return failure(res, 404, 'Legal document not found', 'NOT_FOUND');
+        return failure(res, 404, 'Sitemap document not found', 'NOT_FOUND');
       }
-      return success(res, 'Legal document deleted successfully', { id: String(docId) });
+      return success(res, 'Sitemap document deleted successfully', { id: String(docId) });
     }
 
     return failure(
@@ -221,7 +190,7 @@ const mutateLegalAdmin = asyncHandler(async (req, res) => {
       'VALIDATION_ERROR'
     );
   } catch (error) {
-    logger.error('Mutate legal admin failed', { error: error.message, stack: error.stack });
+    logger.error('Mutate sitemap admin failed', { error: error.message, stack: error.stack });
     if (error.code === 11000) {
       return failure(
         res,
@@ -230,8 +199,8 @@ const mutateLegalAdmin = asyncHandler(async (req, res) => {
         'DUPLICATE'
       );
     }
-    return failure(res, 500, 'Failed to save legal data', 'SERVER_ERROR', error.message);
+    return failure(res, 500, 'Failed to save sitemap data', 'SERVER_ERROR', error.message);
   }
 });
 
-module.exports = { getLegalAdmin, mutateLegalAdmin };
+module.exports = { getSitemapAdmin, mutateSitemapAdmin };

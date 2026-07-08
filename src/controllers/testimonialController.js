@@ -1,37 +1,37 @@
 const asyncHandler = require('express-async-handler');
 const uploadService = require('../services/uploadService');
 const {
-  getTeamAdminBundle,
-  saveTeamSettings,
-  saveTeamMember,
-  deleteTeamMember,
+  getTestimonialAdminBundle,
+  saveTestimonialSettings,
+  saveTestimonial,
+  deleteTestimonial,
   normalizeImageFilename,
-} = require('../services/teamService');
+} = require('../services/testimonialService');
 const { success, failure } = require('../utils/helpers');
 const { logger } = require('../utils/logger');
 
 /**
  * @swagger
- * /cms/team:
+ * /cms/testimonials:
  *   get:
- *     summary: Get Team CMS data
+ *     summary: Get Testimonials CMS data
  *     description: >
- *       Returns team page settings, paginated team members, and optional single member
- *       when `memberId` is provided. Includes `mediaBaseUrl` for profile images.
- *     tags: [CMS Team]
+ *       Returns home testimonials section settings, paginated testimonials,
+ *       and optional single testimonial when `testimonialId` is provided.
+ *     tags: [CMS Testimonials]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: memberId
+ *         name: testimonialId
  *         schema:
  *           type: string
- *         description: Optional team member ObjectId for detail edit.
+ *         description: Optional testimonial ObjectId for detail edit.
  *       - in: query
  *         name: search
  *         schema:
  *           type: string
- *         description: Search by name, job title, email, or phone.
+ *         description: Search by name, role, quote, or company.
  *       - in: query
  *         name: page
  *         schema:
@@ -47,35 +47,35 @@ const { logger } = require('../utils/logger');
  *           default: 10
  *     responses:
  *       200:
- *         description: Team CMS data fetched successfully
+ *         description: Testimonials CMS data fetched successfully
  *       500:
  *         description: Server error
  */
-const getTeamAdmin = asyncHandler(async (req, res) => {
+const getTestimonialAdmin = asyncHandler(async (req, res) => {
   try {
-    const data = await getTeamAdminBundle({
+    const data = await getTestimonialAdminBundle({
       search: req.query.search,
       page: req.query.page,
       limit: req.query.limit,
-      memberId: req.query.memberId,
+      testimonialId: req.query.testimonialId,
     });
-    return success(res, 'Team CMS data fetched successfully', data);
+    return success(res, 'Testimonials CMS data fetched successfully', data);
   } catch (error) {
-    logger.error('Get team admin failed', { error: error.message, stack: error.stack });
-    return failure(res, 500, 'Failed to fetch team CMS data', 'SERVER_ERROR', error.message);
+    logger.error('Get testimonials admin failed', { error: error.message, stack: error.stack });
+    return failure(res, 500, 'Failed to fetch testimonials CMS data', 'SERVER_ERROR', error.message);
   }
 });
 
 /**
  * @swagger
- * /cms/team:
+ * /cms/testimonials:
  *   post:
- *     summary: Team CMS mutations
+ *     summary: Testimonials CMS mutations
  *     description: >
  *       Consolidated admin write endpoint.
- *       Supported actions: `save-settings`, `save-member`, `delete-member`.
- *       For `save-member`, send multipart/form-data with optional `profileImage` file.
- *     tags: [CMS Team]
+ *       Supported actions: `save-settings`, `save-testimonial`, `delete-testimonial`.
+ *       For `save-testimonial`, send multipart/form-data with optional `image` file.
+ *     tags: [CMS Testimonials]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -88,33 +88,37 @@ const getTeamAdmin = asyncHandler(async (req, res) => {
  *             properties:
  *               action:
  *                 type: string
- *                 enum: [save-settings, save-member, delete-member]
+ *                 enum: [save-settings, save-testimonial, delete-testimonial]
  *               settings:
  *                 type: object
- *                 description: Required for save-settings (pageTitle, pageSubtitle, itemsPerPage, seo).
- *               memberId:
+ *                 description: Required for save-settings (sectionTitle, sectionSubtitle).
+ *               testimonialId:
  *                 type: string
- *                 description: Required for delete-member; optional for save-member (update).
- *               fullName:
+ *                 description: Required for delete-testimonial; optional for save-testimonial (update).
+ *               name:
  *                 type: string
- *               jobTitle:
+ *                 description: Customer name.
+ *               title:
  *                 type: string
- *               email:
+ *                 description: Role or designation (e.g. Customer).
+ *               content:
  *                 type: string
- *               phone:
- *                 type: string
+ *                 description: Testimonial quote text.
+ *               rating:
+ *                 type: integer
+ *                 minimum: 1
+ *                 maximum: 5
  *               displayOrder:
  *                 type: integer
  *               isActive:
  *                 type: boolean
- *               profileImage:
+ *               image:
  *                 type: string
  *                 description: Existing stored filename when not uploading a new file.
  *               removeImage:
  *                 type: boolean
  *               search:
  *                 type: string
- *                 description: List refresh filter after save-settings or delete-member.
  *               page:
  *                 type: integer
  *               limit:
@@ -126,103 +130,103 @@ const getTeamAdmin = asyncHandler(async (req, res) => {
  *             properties:
  *               action:
  *                 type: string
- *                 enum: [save-settings, save-member, delete-member]
- *               memberId:
+ *                 enum: [save-settings, save-testimonial, delete-testimonial]
+ *               testimonialId:
  *                 type: string
- *               fullName:
+ *               name:
  *                 type: string
- *               jobTitle:
+ *               title:
  *                 type: string
- *               email:
+ *               content:
  *                 type: string
- *               phone:
- *                 type: string
+ *               rating:
+ *                 type: integer
  *               displayOrder:
  *                 type: integer
  *               isActive:
  *                 type: boolean
- *               profileImage:
+ *               image:
  *                 type: string
  *                 format: binary
  *               removeImage:
  *                 type: boolean
  *     responses:
  *       200:
- *         description: Settings saved, member saved, or member deleted successfully
+ *         description: Settings saved, testimonial saved, or testimonial deleted successfully
  *       400:
  *         description: Validation error
  *       404:
- *         description: Team member not found
+ *         description: Testimonial not found
  *       500:
- *         description: Server error (including profile image upload failure)
+ *         description: Server error (including image upload failure)
  */
-const mutateTeamAdmin = asyncHandler(async (req, res) => {
+const mutateTestimonialAdmin = asyncHandler(async (req, res) => {
   try {
     const action = String(req.body?.action || '').trim().toLowerCase();
     const adminId = req.admin?._id;
 
     if (action === 'save-settings') {
-      await saveTeamSettings(req.body.settings || {}, adminId);
-      const data = await getTeamAdminBundle({
+      await saveTestimonialSettings(req.body.settings || {}, adminId);
+      const data = await getTestimonialAdminBundle({
         search: req.body.search,
         page: req.body.page,
         limit: req.body.limit,
       });
-      return success(res, 'Team page settings saved successfully', data);
+      return success(res, 'Testimonial section settings saved successfully', data);
     }
 
-    if (action === 'save-member') {
+    if (action === 'save-testimonial') {
       const payload = { ...req.body };
 
       if (req.body?.removeImage === true || req.body?.removeImage === 'true') {
         payload.removeImage = true;
       } else if (req.file) {
         try {
-          const uploaded = await uploadService.upload(req.file, 'team', {
+          const uploaded = await uploadService.upload(req.file, 'testimonial', {
             generateThumbnail: false,
           });
-          payload.profileImage =
+          payload.image =
             uploadService.toStoredProfileFilename(uploaded.filename) || uploaded.filename || '';
         } catch (error) {
-          logger.error('Team member image upload failed', { error: error.message });
+          logger.error('Testimonial image upload failed', { error: error.message });
           return failure(res, 500, 'Failed to upload profile image', 'SERVER_ERROR');
         }
-      } else if (req.body?.profileImage) {
-        payload.profileImage = normalizeImageFilename(req.body.profileImage);
+      } else if (req.body?.image) {
+        payload.image = normalizeImageFilename(req.body.image);
       }
 
-      const member = await saveTeamMember(payload);
-      return success(res, 'Team member saved successfully', { member });
+      const testimonial = await saveTestimonial(payload, adminId);
+      return success(res, 'Testimonial saved successfully', { testimonial });
     }
 
-    if (action === 'delete-member') {
-      const memberId = req.body.memberId || req.body.id;
-      await deleteTeamMember(memberId);
-      const data = await getTeamAdminBundle({
+    if (action === 'delete-testimonial') {
+      const testimonialId = req.body.testimonialId || req.body.id;
+      await deleteTestimonial(testimonialId);
+      const data = await getTestimonialAdminBundle({
         search: req.body.search,
         page: req.body.page,
         limit: req.body.limit,
       });
-      return success(res, 'Team member deleted successfully', data);
+      return success(res, 'Testimonial deleted successfully', data);
     }
 
     return failure(
       res,
       400,
-      'Invalid action. Use save-settings, save-member, or delete-member',
+      'Invalid action. Use save-settings, save-testimonial, or delete-testimonial',
       'VALIDATION_ERROR'
     );
   } catch (error) {
-    logger.error('Mutate team admin failed', { error: error.message, stack: error.stack });
+    logger.error('Mutate testimonials admin failed', { error: error.message, stack: error.stack });
     const status = /not found/i.test(error.message) ? 404 : 500;
     return failure(
       res,
       status,
-      error.message || 'Failed to save team data',
+      error.message || 'Failed to save testimonial data',
       status === 404 ? 'NOT_FOUND' : 'SERVER_ERROR',
       error.message
     );
   }
 });
 
-module.exports = { getTeamAdmin, mutateTeamAdmin };
+module.exports = { getTestimonialAdmin, mutateTestimonialAdmin };

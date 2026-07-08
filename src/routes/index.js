@@ -15,6 +15,10 @@ const legalRoutes = require('./legalRoutes');
 const aboutRoutes = require('./aboutRoutes');
 const contactRoutes = require('./contactRoutes');
 const teamRoutes = require('./teamRoutes');
+const testimonialRoutes = require('./testimonialRoutes');
+const bannerRoutes = require('./bannerRoutes');
+const sitemapRoutes = require('./sitemapRoutes');
+const dashboardRoutes = require('./dashboardRoutes');
 
 // Auth routes 
 router.use('/auth', authRoutes);
@@ -45,6 +49,14 @@ router.use('/cms/about', aboutRoutes);
 router.use('/cms/contact', contactRoutes);
 
 router.use('/cms/team', teamRoutes);
+
+router.use('/cms/testimonials', testimonialRoutes);
+
+router.use('/cms/banners', bannerRoutes);
+
+router.use('/cms/sitemap', sitemapRoutes);
+
+router.use('/dashboard', dashboardRoutes);
 
 module.exports = router;
 
